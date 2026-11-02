@@ -1,0 +1,4 @@
+.venv
+/apps/frontend/node_modules
+.env
+/database/migrations

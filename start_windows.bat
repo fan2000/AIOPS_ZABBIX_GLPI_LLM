@@ -1,0 +1,5 @@
+@echo off
+title AI IT Operations - Launcher Windows
+cd /d "%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start_windows.ps1"
+pause
