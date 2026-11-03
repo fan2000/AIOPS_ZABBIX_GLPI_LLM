@@ -15,7 +15,7 @@ class ZabbixClient:
         username: Optional[str] = None,
         password: Optional[str] = None,
     ):
-        self.api_url = api_url or os.getenv("ZABBIX_API_URL", "http://localhost:8080/zabbix/api_jsonrpc.php")
+        self.api_url = api_url or os.getenv("ZABBIX_API_URL", "http://localhost:8089/api_jsonrpc.php")
         self.auth_token = auth_token or os.getenv("ZABBIX_API_TOKEN")
         self.username = username or os.getenv("ZABBIX_USER", "Admin")
         self.password = password or os.getenv("ZABBIX_PASSWORD", "zabbix")

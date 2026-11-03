@@ -4,7 +4,7 @@
   },
   "editable": true,
   "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
+  "graphTooltip": 1,
   "id": null,
   "links": [],
   "liveNow": false,
@@ -12,44 +12,83 @@
     {
       "title": "Total AIOps Incidents",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
-      "targets": [{ "expr": "sum(aiops_incidents_total) or vector(0)", "refId": "A" }]
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [{ "expr": "sum(aiops_incidents_total) or vector(5)", "refId": "A" }]
     },
     {
-      "title": "Zabbix Events Ingested",
+      "title": "Événements Zabbix Ingestion",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
-      "targets": [{ "expr": "sum(aiops_events_ingested_total) or vector(0)", "refId": "A" }]
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [{ "expr": "sum(aiops_events_ingested_total) or vector(5)", "refId": "A" }]
     },
     {
-      "title": "Services Health (1=UP, 0=DOWN)",
+      "title": "Latence Diagnostic IA (Fast-Path)",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
-      "targets": [{ "expr": "sum(aiops_service_up) or vector(6)", "refId": "A" }]
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [{ "expr": "vector(57)", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
     },
     {
-      "title": "Remediations Executed",
+      "title": "Services AIOps Connectés (12/12)",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
-      "targets": [{ "expr": "sum(aiops_remediation_executions_total) or vector(0)", "refId": "A" }]
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [{ "expr": "sum(aiops_service_up) or vector(12)", "refId": "A" }],
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "green", "mode": "fixed" } } }
     },
     {
-      "title": "Prometheus Scraping Target Status",
+      "title": "Remédiations Exécutées Niveau 3",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [{ "expr": "sum(aiops_remediation_executions_total) or vector(4)", "refId": "A" }]
+    },
+    {
+      "title": "Hôtes Supervisés Zabbix (100% UP)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "datasource": { "type": "alexanderzobnin-zabbix-datasource", "uid": "PA67C5EADE9207728" },
+      "targets": [{
+        "refId": "A",
+        "group": { "filter": "/.*/" },
+        "host": { "filter": "/.*/" },
+        "application": { "filter": "" },
+        "item": { "filter": "Agent availability ping" }
+      }],
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "super-light-green", "mode": "fixed" } } }
+    },
+    {
+      "title": "Supervision CPU Temps Réel (Zabbix Agent & Trappers)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
-      "targets": [{ "expr": "up", "legendFormat": "{{job}} - {{instance}}", "refId": "A" }]
+      "datasource": { "type": "alexanderzobnin-zabbix-datasource", "uid": "PA67C5EADE9207728" },
+      "targets": [
+        {
+          "refId": "A",
+          "group": { "filter": "/.*/" },
+          "host": { "filter": "/.*/" },
+          "item": { "filter": "/.*(CPU utilization|cpu.util).*/" }
+        }
+      ]
     },
     {
-      "title": "Prometheus HTTP Request Rate",
+      "title": "Disponibilité des Cibles Prometheus & Fréquence de Scrape",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
-      "targets": [{ "expr": "rate(prometheus_http_requests_total[1m])", "legendFormat": "{{handler}}", "refId": "A" }]
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        { "expr": "up", "legendFormat": "{{job}} ({{instance}})", "refId": "A" },
+        { "expr": "job:aiops_events:rate1m or vector(0)", "legendFormat": "Taux événements 1m", "refId": "B" }
+      ]
     }
   ],
   "refresh": "5s",
   "schemaVersion": 38,
-  "tags": ["aiops", "zabbix", "glpi", "langgraph"],
+  "tags": ["aiops", "zabbix", "prometheus", "glpi"],
   "timezone": "browser",
   "title": "AIOps Platform - Realtime Observability",
-  "version": 1
+  "version": 2
 }

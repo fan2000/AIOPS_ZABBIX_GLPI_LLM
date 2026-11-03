@@ -121,6 +121,8 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin_aiops_pass
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=alexanderzobnin-zabbix-app
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=alexanderzobnin-zabbix-app
     volumes:
       - ./infrastructure/monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
       - ./infrastructure/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
@@ -251,8 +253,8 @@ services:
     ports:
       - "10050:10050"
     environment:
-      - ZBX_HOSTNAME=aiops-host
-      - ZBX_SERVER_HOST=zabbix-server
+      - ZBX_HOSTNAME=Zabbix server
+      - ZBX_SERVER_HOST=0.0.0.0/0
     depends_on:
       - zabbix-server
     networks:
