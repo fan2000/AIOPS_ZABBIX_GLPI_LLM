@@ -1,4 +1,9 @@
 .venv
 /apps/frontend/node_modules
+/apps/frontend/.next
 .env
 /database/migrations
+*.pid
+__pycache__/
+*.pyc
+.pytest_cache/

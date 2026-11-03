@@ -6,6 +6,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from packages.connectors.redis_streams import redis_streams
 from packages.connectors.zabbix.src.normalizer import normalize_zabbix_payload
+from packages.observability.src.metrics import record_event_ingested
 from packages.security.src.hmac_auth import verify_bearer_token, verify_hmac_signature
 
 router = APIRouter(prefix="/api/v1/webhooks", tags=["Webhooks"])
@@ -41,6 +42,7 @@ async def receive_zabbix_webhook(
 
     # Mise en file asynchrone ultra-rapide (< 30ms)
     msg_id = await redis_streams.publish_event("zabbix:events", normalized.model_dump())
+    record_event_ingested(source="zabbix", event_type=normalized.event_type.value)
 
     return {
         "status": "accepted",

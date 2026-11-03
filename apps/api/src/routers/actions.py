@@ -12,7 +12,8 @@ from packages.contracts.src.runbook import (
     RunbookExecutionRequest,
     RunbookExecutionResult,
 )
-from packages.domain.models.database import ActionApproval, ActionExecution, Runbook
+from packages.domain.models.database import ActionApproval, ActionExecution, AuditLog, Runbook
+from packages.observability.src.metrics import record_remediation_execution
 from services.remediation_worker.src.runner import remediation_runner
 
 router = APIRouter(prefix="/api/v1/actions", tags=["Remediation & Runbooks"])
@@ -84,7 +85,22 @@ async def execute_runbook_action(
         verification_details=result.verification_details,
     )
     session.add(execution_record)
+
+    audit_entry = AuditLog(
+        action="RUNBOOK_EXECUTED",
+        resource_type="runbook",
+        resource_id=request.runbook_id,
+        details={
+            "incident_id": str(request.incident_id),
+            "approved_by": request.approved_by_user_id,
+            "status": result.status.value,
+            "exit_code": result.exit_code,
+        },
+    )
+    session.add(audit_entry)
     await session.commit()
+
+    record_remediation_execution(status=result.status.value, runner_type=rb.runner_type)
 
     return {
         "execution_id": str(result.execution_id),

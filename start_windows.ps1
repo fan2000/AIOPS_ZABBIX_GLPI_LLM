@@ -37,13 +37,13 @@ try {
     exit 1
 }
 
-# 3. Démarrage des services de données (PostgreSQL 16 + Redis)
-Write-Host "[2/6] Démarrage des conteneurs de base (Postgres 5435 & Redis 6380)..." -ForegroundColor Green
+# 3. Démarrage des services d'infrastructure (Postgres, Redis, GLPI, Zabbix, UIs Web)
+Write-Host "[2/6] Démarrage des conteneurs de base, Zabbix 7.0 et GLPI 10..." -ForegroundColor Green
 try {
-    docker compose up -d postgres redis
-    Write-Host "   -> PostgreSQL pgvector (port 5435) et Redis Streams (port 6380) actifs." -ForegroundColor DarkGray
+    docker compose up -d postgres redis glpi-db glpi zabbix-server zabbix-web zabbix-agent adminer redis-commander
+    Write-Host "   -> PostgreSQL (5435), Redis (6380), GLPI (8088), Zabbix (8089), Adminer (8086), Redis Commander (8087) actifs." -ForegroundColor DarkGray
 } catch {
-    Write-Host "   [!] Docker Compose n'a pas pu démarrer postgres/redis. Utilisation du mode fallback mémoire." -ForegroundColor Yellow
+    Write-Host "   [!] Docker Compose n'a pas pu démarrer tous les conteneurs. Utilisation du mode fallback mémoire/lab." -ForegroundColor Yellow
 }
 
 # 4. Attente de disponibilité et initialisation de la base
@@ -71,14 +71,15 @@ Write-Host "   -> Incident Worker lancé (PID: $($WorkerProcess.Id))." -Foregrou
 # 7. Démarrage du Frontend Next.js
 Write-Host "[6/6] Préparation et lancement du Frontend Next.js sur http://localhost:3005..." -ForegroundColor Green
 Set-Location "$ScriptDir\apps\frontend"
+$PkgManager = if (Get-Command pnpm -ErrorAction SilentlyContinue) { "pnpm.cmd" } else { "npm.cmd" }
 if (-not (Test-Path "$ScriptDir\apps\frontend\node_modules")) {
-    Write-Host "   -> Installation des modules Node.js..." -ForegroundColor DarkGray
-    npm install --silent
+    Write-Host "   -> Installation des modules ($PkgManager)..." -ForegroundColor DarkGray
+    Start-Process -FilePath $PkgManager -ArgumentList "install" -Wait -NoNewWindow
 }
-$FrontProcess = Start-Process -FilePath "npm.cmd" -ArgumentList "run dev" -PassThru -WindowStyle Minimized
+$FrontProcess = Start-Process -FilePath $PkgManager -ArgumentList "run dev" -PassThru -WindowStyle Minimized
 Set-Content -Path "$ScriptDir\.front.pid" -Value $FrontProcess.Id
 Set-Location $ScriptDir
-Write-Host "   -> Frontend Next.js lancé (PID: $($FrontProcess.Id))." -ForegroundColor DarkGray
+Write-Host "   -> Frontend Next.js lancé avec $PkgManager (PID: $($FrontProcess.Id))." -ForegroundColor DarkGray
 
 Write-Host ""
 Write-Host "==========================================================" -ForegroundColor Green
@@ -86,6 +87,10 @@ Write-Host "   PLATEFORME AI IT OPERATIONS EN COURS D'EXÉCUTION !     " -Foregr
 Write-Host "==========================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "   👉 Interface Web Frontend     : http://localhost:3005" -ForegroundColor Cyan
+Write-Host "   👉 GLPI 10 ITSM & CMDB        : http://localhost:8088 (login: glpi / glpi)" -ForegroundColor Cyan
+Write-Host "   👉 Zabbix 7.0 Supervision     : http://localhost:8089 (login: Admin / zabbix)" -ForegroundColor Cyan
+Write-Host "   👉 Adminer (Web Postgres/DB)  : http://localhost:8086" -ForegroundColor Cyan
+Write-Host "   👉 Redis Commander (Web Redis): http://localhost:8087" -ForegroundColor Cyan
 Write-Host "   👉 Swagger UI / OpenAPI Docs  : http://localhost:8005/docs" -ForegroundColor Cyan
 Write-Host "   👉 Health & Readiness Probe   : http://localhost:8005/health/ready" -ForegroundColor Cyan
 Write-Host "   👉 Zabbix Webhook Endpoint    : http://localhost:8005/api/v1/webhooks/zabbix" -ForegroundColor Cyan

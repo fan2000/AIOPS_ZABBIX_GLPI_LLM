@@ -48,10 +48,19 @@ services:
     ports:
       - "8005:8000"
     environment:
+      - PYTHONUNBUFFERED=1
       - DATABASE_URL=postgresql+asyncpg://aiops_user:aiops_secure_password@postgres:5432/aiops_db
       - REDIS_URL=redis://:aiops_redis_password@redis:6379/0
-      - LAB_MODE_ENABLED=true
+      - LAB_MODE_ENABLED=false
+      - GLPI_API_URL=http://glpi:80/apirest.php
+      - GLPI_USERNAME=glpi
+      - GLPI_PASSWORD=glpi
+      - ZABBIX_API_URL=http://zabbix-web:8080/api_jsonrpc.php
+      - ZABBIX_USER=Admin
+      - ZABBIX_PASSWORD=zabbix
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    volumes:
+      - .:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,14 +76,24 @@ services:
       dockerfile: infrastructure/docker/Dockerfile.worker
     container_name: aiops_incident_worker
     restart: unless-stopped
-    command: ["python", "-c", "import asyncio; from services.incident_worker.src.worker import incident_worker; asyncio.run(incident_worker.start())"]
+    command: ["python", "-u", "-m", "services.incident_worker.src.main"]
     environment:
+      - PYTHONUNBUFFERED=1
       - DATABASE_URL=postgresql+asyncpg://aiops_user:aiops_secure_password@postgres:5432/aiops_db
       - REDIS_URL=redis://:aiops_redis_password@redis:6379/0
-      - GLPI_API_URL=http://api-gateway:8000/api/v1/lab/glpi
+      - LAB_MODE_ENABLED=false
+      - GLPI_API_URL=http://glpi:80/apirest.php
+      - GLPI_USERNAME=glpi
+      - GLPI_PASSWORD=glpi
+      - ZABBIX_API_URL=http://zabbix-web:8080/api_jsonrpc.php
+      - ZABBIX_USER=Admin
+      - ZABBIX_PASSWORD=zabbix
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    volumes:
+      - .:/app
     depends_on:
       - api-gateway
+      - glpi
     networks:
       - aiops_internal
 
@@ -87,6 +106,7 @@ services:
       - "9095:9090"
     volumes:
       - ./infrastructure/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infrastructure/monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - aiops_prometheus_data:/prometheus
     networks:
       - aiops_internal
@@ -110,6 +130,134 @@ services:
     networks:
       - aiops_internal
 
+  # Base de données MariaDB 10.11 dédiée pour GLPI
+  glpi-db:
+    image: mariadb:10.11
+    container_name: aiops_glpi_db
+    restart: unless-stopped
+    ports:
+      - "3307:3306"
+    environment:
+      MARIADB_ROOT_PASSWORD: glpi_root_password
+      MARIADB_DATABASE: glpi_db
+      MARIADB_USER: glpi_user
+      MARIADB_PASSWORD: glpi_secure_password
+    volumes:
+      - aiops_glpi_db_data:/var/lib/mysql
+    networks:
+      - aiops_internal
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Serveur GLPI 10 ITSM & CMDB
+  glpi:
+    image: glpi/glpi:latest
+    container_name: aiops_glpi
+    restart: unless-stopped
+    ports:
+      - "8088:80"
+    environment:
+      - GLPI_DB_HOST=glpi-db
+      - GLPI_DB_PORT=3306
+      - GLPI_DB_NAME=glpi_db
+      - GLPI_DB_USER=glpi_user
+      - GLPI_DB_PASSWORD=glpi_secure_password
+      - GLPI_SKIP_AUTOINSTALL=false
+    volumes:
+      - aiops_glpi_config:/var/glpi/config
+      - aiops_glpi_files:/var/glpi/files
+      - aiops_glpi_marketplace:/var/glpi/marketplace
+    depends_on:
+      glpi-db:
+        condition: service_healthy
+    networks:
+      - aiops_internal
+
+  # Interface Web d'administration des bases de données (PostgreSQL & MariaDB)
+  adminer:
+    image: adminer:latest
+    container_name: aiops_adminer
+    restart: unless-stopped
+    ports:
+      - "8086:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    networks:
+      - aiops_internal
+
+  # Interface Web d'administration de Redis Streams
+  redis-commander:
+    image: ghcr.io/joeferner/redis-commander:latest
+    container_name: aiops_redis_commander
+    restart: unless-stopped
+    ports:
+      - "8087:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:aiops_redis_password
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - aiops_internal
+
+  # Serveur de supervision Zabbix 7.0 LTS
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:alpine-7.0-latest
+    container_name: aiops_zabbix_server
+    restart: unless-stopped
+    ports:
+      - "10051:10051"
+    environment:
+      - DB_SERVER_HOST=postgres
+      - DB_SERVER_PORT=5432
+      - POSTGRES_DB=zabbix
+      - POSTGRES_USER=zabbix
+      - POSTGRES_PASSWORD=zabbix_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - aiops_internal
+
+  # Interface Web Zabbix 7.0 (Nginx & PHP)
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.0-latest
+    container_name: aiops_zabbix_web
+    restart: unless-stopped
+    ports:
+      - "8089:8080"
+    environment:
+      - ZBX_SERVER_HOST=zabbix-server
+      - ZBX_SERVER_PORT=10051
+      - DB_SERVER_HOST=postgres
+      - DB_SERVER_PORT=5432
+      - POSTGRES_DB=zabbix
+      - POSTGRES_USER=zabbix
+      - POSTGRES_PASSWORD=zabbix_password
+      - PHP_TZ=Europe/Paris
+    depends_on:
+      - zabbix-server
+    networks:
+      - aiops_internal
+
+  # Agent Zabbix de supervision locale
+  zabbix-agent:
+    image: zabbix/zabbix-agent:alpine-7.0-latest
+    container_name: aiops_zabbix_agent
+    restart: unless-stopped
+    ports:
+      - "10050:10050"
+    environment:
+      - ZBX_HOSTNAME=aiops-host
+      - ZBX_SERVER_HOST=zabbix-server
+    depends_on:
+      - zabbix-server
+    networks:
+      - aiops_internal
+
 networks:
   aiops_internal:
     driver: bridge
@@ -119,3 +267,7 @@ volumes:
   aiops_redis_data:
   aiops_prometheus_data:
   aiops_grafana_data:
+  aiops_glpi_db_data:
+  aiops_glpi_config:
+  aiops_glpi_files:
+  aiops_glpi_marketplace:

@@ -25,10 +25,13 @@ def build_incident_graph() -> StateGraph:
     graph.add_node("validation_agent", validation_agent_node)
     graph.add_node("feedback_agent", feedback_agent_node)
 
-    # Définition des transitions séquentielles déterministes
+    # Définition des transitions avec parallélisation optimisée (Fan-out / Fan-in)
     graph.add_edge(START, "incident_agent")
+    # Parallélisation de la corrélation et de la recherche documentaire
     graph.add_edge("incident_agent", "correlation_agent")
-    graph.add_edge("correlation_agent", "knowledge_agent")
+    graph.add_edge("incident_agent", "knowledge_agent")
+    # Synchronisation vers le diagnostic
+    graph.add_edge("correlation_agent", "diagnosis_agent")
     graph.add_edge("knowledge_agent", "diagnosis_agent")
     graph.add_edge("diagnosis_agent", "resolution_agent")
     graph.add_edge("resolution_agent", "validation_agent")

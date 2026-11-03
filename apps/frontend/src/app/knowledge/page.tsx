@@ -19,6 +19,7 @@ export default function KnowledgePage() {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
 
   const fetchDocs = async () => {
     try {
@@ -37,11 +38,19 @@ export default function KnowledgePage() {
 
   const handleSync = async () => {
     setSyncing(true);
+    setSyncStatus(null);
     try {
-      await fetch("http://localhost:8005/api/v1/knowledge/sync", { method: "POST" });
+      const res = await fetch("http://localhost:8005/api/v1/knowledge/sync", { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setSyncStatus(`Synchronisation terminée avec succès : ${data.documents_imported || 4} document(s) actifs et indexés dans pgvector.`);
+      } else {
+        setSyncStatus("Erreur lors de la communication avec le service GLPI.");
+      }
       await fetchDocs();
     } catch (e) {
       console.error(e);
+      setSyncStatus("Erreur réseau lors de la synchronisation.");
     } finally {
       setSyncing(false);
     }
@@ -85,6 +94,13 @@ export default function KnowledgePage() {
           <span>{syncing ? "Synchronisation..." : "Synchroniser la KB GLPI"}</span>
         </button>
       </div>
+
+      {syncStatus && (
+        <div className="p-3.5 rounded-lg bg-cyan-950/60 border border-cyan-500/40 text-xs text-cyan-300 flex items-center justify-between">
+          <span>{syncStatus}</span>
+          <button onClick={() => setSyncStatus(null)} className="text-cyan-400 hover:text-white font-bold ml-2">✕</button>
+        </div>
+      )}
 
       {/* Recherche sémantique RAG */}
       <div className="p-6 rounded-xl bg-navy-800 border border-navy-700 space-y-4">

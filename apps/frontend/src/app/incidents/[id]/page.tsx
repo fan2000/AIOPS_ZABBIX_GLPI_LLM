@@ -27,6 +27,7 @@ export default function IncidentDetailPage({
   const [analyzing, setAnalyzing] = useState(false);
   const [executingAction, setExecutingAction] = useState(false);
   const [executionResult, setExecutionResult] = useState<any>(null);
+  const [selectedRunbook, setSelectedRunbook] = useState("rb-collect-top-processes");
 
   const fetchDetail = async () => {
     try {
@@ -42,6 +43,8 @@ export default function IncidentDetailPage({
 
   useEffect(() => {
     fetchDetail();
+    const interval = setInterval(fetchDetail, 4000);
+    return () => clearInterval(interval);
   }, [incidentId]);
 
   const handleReanalyze = async () => {
@@ -217,26 +220,44 @@ export default function IncidentDetailPage({
             <Terminal className="w-5 h-5 text-cyan-400" />
             Remédiation Contrôlée (Validation Technicien Niveau 3)
           </h3>
-          <span className="text-xs text-slate-400">Sandbox sécurisée sans shell libre</span>
+          <span className="text-xs text-emerald-400 font-mono">Mode Réel & Sandbox Sécurisée</span>
         </div>
 
         <p className="text-xs text-slate-300">
-          L&apos;IA a identifié une action de remédiation préapprouvée. Validez pour déclencher son exécution dans l&apos;environnement restreint :
+          L&apos;IA a identifié des runbooks déclaratifs sécurisés du catalogue. Sélectionnez une action préapprouvée et déclenchez son exécution contrôlée :
         </p>
 
-        <div className="p-4 rounded-xl bg-navy-900 border border-navy-700 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="text-sm font-bold text-white">Redémarrer / Purger selon runbook catalogue</div>
-            <div className="text-xs text-slate-400">Runbook : <code className="text-cyan-400">rb-win-service-restart</code> ou <code className="text-cyan-400">rb-disk-cleanup-logs</code></div>
+        <div className="p-4 rounded-xl bg-navy-900 border border-navy-700 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex-1 space-y-1">
+              <label className="text-xs font-semibold text-slate-400">Runbook Certifié à Exécuter :</label>
+              <select
+                value={selectedRunbook}
+                onChange={(e) => setSelectedRunbook(e.target.value)}
+                className="w-full bg-navy-800 border border-navy-700 text-white rounded-lg p-2.5 text-xs focus:ring-1 focus:ring-cyan-400 outline-none"
+              >
+                <option value="rb-collect-top-processes">rb-collect-top-processes : Collecte des 10 processus les plus consommateurs</option>
+                <option value="rb-win-service-restart">rb-win-service-restart : Redémarrage de service supervisé</option>
+                <option value="rb-linux-service-restart">rb-linux-service-restart : Redémarrage service systemd</option>
+                <option value="rb-disk-cleanup-logs">rb-disk-cleanup-logs : Purge préventive des logs archivés</option>
+              </select>
+            </div>
+            <div className="sm:self-end">
+              <button
+                onClick={() => {
+                  let p: any = {};
+                  if (selectedRunbook === "rb-win-service-restart") p = { service_name: "Spooler" };
+                  if (selectedRunbook === "rb-linux-service-restart") p = { service_name: "nginx" };
+                  handleExecuteRunbook(selectedRunbook, p);
+                }}
+                disabled={executingAction}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold bg-cyan-500 hover:bg-cyan-400 text-navy-900 transition-all disabled:opacity-50 shrink-0"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                <span>{executingAction ? "Exécution réelle..." : "Approuver & Exécuter"}</span>
+              </button>
+            </div>
           </div>
-          <button
-            onClick={() => handleExecuteRunbook("rb-collect-top-processes", {})}
-            disabled={executingAction}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-bold bg-cyan-500 hover:bg-cyan-400 text-navy-900 transition-all disabled:opacity-50"
-          >
-            <Play className="w-4 h-4 fill-current" />
-            <span>{executingAction ? "Exécution..." : "Approuver & Exécuter le Runbook"}</span>
-          </button>
         </div>
 
         {/* Résultat d'exécution en direct */}
@@ -245,12 +266,12 @@ export default function IncidentDetailPage({
             <div className="flex items-center justify-between text-xs font-semibold text-emerald-400">
               <span className="flex items-center gap-1.5">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                Exécution réussie (Code retour: {executionResult.exit_code})
+                Exécution réelle terminée (Code retour: {executionResult.exit_code})
               </span>
               <span>Durée: {executionResult.duration_seconds}s</span>
             </div>
-            <pre className="p-3 rounded bg-black/60 font-mono text-[11px] text-slate-300 overflow-x-auto">
-              {executionResult.stdout}
+            <pre className="p-3 rounded bg-black/60 font-mono text-[11px] text-slate-300 overflow-x-auto whitespace-pre-wrap">
+              {executionResult.stdout || "(Sortie vide)"}
             </pre>
           </div>
         )}

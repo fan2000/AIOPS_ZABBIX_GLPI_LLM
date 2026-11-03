@@ -12,15 +12,19 @@ def get_webhook_secret() -> str:
 
 
 def verify_hmac_signature(payload_bytes: bytes, signature_header: Optional[str]) -> bool:
-    """Vérifie la signature HMAC SHA-256 du webhook Zabbix."""
+    """Vérifie la signature HMAC SHA-256 du webhook Zabbix ou le jeton secret partagé."""
     if not signature_header:
         return False
 
-    secret = get_webhook_secret().encode("utf-8")
-    expected_mac = hmac.new(secret, payload_bytes, hashlib.sha256).hexdigest()
+    secret = get_webhook_secret()
+    if hmac.compare_digest(signature_header.strip(), secret):
+        return True
+
+    secret_bytes = secret.encode("utf-8")
+    expected_mac = hmac.new(secret_bytes, payload_bytes, hashlib.sha256).hexdigest()
     
     # Gestion du préfixe sha256= si présent
-    received_signature = signature_header
+    received_signature = signature_header.strip()
     if received_signature.startswith("sha256="):
         received_signature = received_signature[7:]
 

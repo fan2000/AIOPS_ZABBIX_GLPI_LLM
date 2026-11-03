@@ -8,6 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    procps \
     openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
@@ -17,4 +18,4 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN pip install --no-deps -e .
 
-CMD ["python", "-c", "import asyncio; from services.incident_worker.src.worker import incident_worker; asyncio.run(incident_worker.start())"]
+CMD ["python", "-u", "-m", "services.incident_worker.src.main"]

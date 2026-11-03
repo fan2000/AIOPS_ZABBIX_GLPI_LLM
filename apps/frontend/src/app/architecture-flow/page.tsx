@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { 
   Activity, 
   ArrowDown, 
@@ -10,6 +10,7 @@ import {
   Clock, 
   Database, 
   Layers, 
+  RefreshCw,
   Server, 
   ShieldCheck, 
   Terminal, 
@@ -25,7 +26,7 @@ interface PipelineNode {
   description: string;
 }
 
-const NODES_DATA: PipelineNode[] = [
+const DEFAULT_NODES: PipelineNode[] = [
   {
     id: "zabbix",
     name: "Zabbix Server 7.0",
@@ -93,15 +94,46 @@ const NODES_DATA: PipelineNode[] = [
 ];
 
 export default function ArchitectureFlowPage() {
-  const [selectedNode, setSelectedNode] = useState<PipelineNode>(NODES_DATA[3]);
+  const [nodes, setNodes] = useState<PipelineNode[]>(DEFAULT_NODES);
+  const [selectedNode, setSelectedNode] = useState<PipelineNode>(DEFAULT_NODES[3]);
+
+  const fetchFlowStatus = async () => {
+    try {
+      const res = await fetch("http://localhost:8005/api/v1/system/flow-status");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.nodes && data.nodes.length > 0) {
+          setNodes(data.nodes);
+          setSelectedNode((prev) => data.nodes.find((n: PipelineNode) => n.id === prev.id) || data.nodes[0]);
+        }
+      }
+    } catch (e) {
+      console.error("Erreur flux d'architecture:", e);
+    }
+  };
+
+  useEffect(() => {
+    fetchFlowStatus();
+    const interval = setInterval(fetchFlowStatus, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
-      <div>
-        <h2 className="text-2xl font-bold text-white">Flux d&apos;Architecture & Pipeline Temps Réel</h2>
-        <p className="text-sm text-slate-400">
-          Visualisation interactive de la progression réelle d&apos;un incident à travers la chaîne AIOps
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-white">Flux d&apos;Architecture & Pipeline Temps Réel</h2>
+          <p className="text-sm text-slate-400">
+            Visualisation interactive de la progression réelle d&apos;un incident à travers la chaîne AIOps
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="flex h-2.5 w-2.5 relative">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyan-500"></span>
+          </span>
+          <span className="text-xs text-slate-400 font-mono">Topologie Live</span>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -113,8 +145,8 @@ export default function ArchitectureFlowPage() {
           </h3>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {NODES_DATA.map((node) => {
-              const isSelected = selectedNode.id === node.id;
+            {nodes.map((node) => {
+              const isSelected = selectedNode?.id === node.id;
               return (
                 <div
                   key={node.id}
@@ -132,6 +164,8 @@ export default function ArchitectureFlowPage() {
                         ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
                         : node.status === "waiting_approval"
                         ? "bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse"
+                        : node.status === "running"
+                        ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
                         : "bg-slate-700 text-slate-300"
                     }`}>
                       {node.status}
@@ -155,31 +189,33 @@ export default function ArchitectureFlowPage() {
             Détail du Nœud Sélectionné
           </h3>
 
-          <div className="p-4 rounded-xl bg-navy-900 border border-navy-700 space-y-3">
-            <div>
-              <span className="text-xs text-cyan-400 font-semibold">{selectedNode.category}</span>
-              <h4 className="text-base font-bold text-white">{selectedNode.name}</h4>
-            </div>
+          {selectedNode && (
+            <div className="p-4 rounded-xl bg-navy-900 border border-navy-700 space-y-3">
+              <div>
+                <span className="text-xs text-cyan-400 font-semibold">{selectedNode.category}</span>
+                <h4 className="text-base font-bold text-white">{selectedNode.name}</h4>
+              </div>
 
-            <div className="text-xs text-slate-300 leading-relaxed">
-              {selectedNode.description}
-            </div>
+              <div className="text-xs text-slate-300 leading-relaxed">
+                {selectedNode.description}
+              </div>
 
-            <div className="pt-3 border-t border-navy-700/80 space-y-2 text-xs">
-              <div className="flex justify-between">
-                <span className="text-slate-400">Statut opérationnel :</span>
-                <span className="text-emerald-400 font-semibold uppercase">{selectedNode.status}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Temps de traitement :</span>
-                <span className="text-white font-mono">{selectedNode.latency}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Tolérance de panne :</span>
-                <span className="text-cyan-400 font-semibold">Reprise automatique</span>
+              <div className="pt-3 border-t border-navy-700/80 space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Statut opérationnel :</span>
+                  <span className="text-emerald-400 font-semibold uppercase">{selectedNode.status}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Temps de traitement :</span>
+                  <span className="text-white font-mono">{selectedNode.latency}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Tolérance de panne :</span>
+                  <span className="text-cyan-400 font-semibold">Reprise automatique</span>
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           <div className="p-4 rounded-xl bg-navy-900/60 border border-cyan-500/20 text-xs text-slate-300 space-y-2">
             <div className="font-semibold text-white flex items-center gap-1.5">

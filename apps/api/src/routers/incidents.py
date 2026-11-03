@@ -58,6 +58,11 @@ async def get_incident(
     ai_stmt = select(AIAnalysisRun).where(AIAnalysisRun.incident_id == incident_id).order_by(desc(AIAnalysisRun.created_at)).limit(1)
     analysis = (await session.execute(ai_stmt)).scalar_one_or_none()
 
+    recs = []
+    if analysis:
+        rec_stmt = select(AIRecommendation).where(AIRecommendation.analysis_run_id == analysis.id)
+        recs = (await session.execute(rec_stmt)).scalars().all()
+
     return {
         "id": str(inc.id),
         "incident_number": inc.incident_number,
@@ -83,11 +88,23 @@ async def get_incident(
         ],
         "latest_analysis": {
             "model": analysis.model_name,
+            "duration_ms": analysis.duration_ms,
             "hypotheses": analysis.hypotheses,
             "checks": analysis.checks,
             "confidence_level": analysis.confidence_level,
             "confidence_explanation": analysis.confidence_explanation,
             "created_at": analysis.created_at.isoformat(),
+            "recommendations": [
+                {
+                    "id": str(r.id),
+                    "action_text": r.action_text,
+                    "runbook_id": r.runbook_id,
+                    "parameters": r.parameters,
+                    "risk_level": r.risk_level,
+                    "requires_approval": r.requires_approval,
+                }
+                for r in recs
+            ],
         } if analysis else None,
     }
 
@@ -98,6 +115,8 @@ async def trigger_incident_analysis(
     session: AsyncSession = Depends(get_db_session),
 ) -> Dict[str, Any]:
     """Déclenche manuellement une nouvelle analyse LangGraph pour un incident."""
+    import time
+    start_t = time.time()
     stmt = select(Incident).where(Incident.id == incident_id)
     inc = (await session.execute(stmt)).scalar_one_or_none()
     if not inc:
@@ -125,17 +144,35 @@ async def trigger_incident_analysis(
 
     result = await run_incident_analysis(state)
     report = result.get("diagnostic_report", {})
+    dur_ms = int((time.time() - start_t) * 1000)
 
     # Persistance de l'analyse
     ai_run = AIAnalysisRun(
+        id=UUID(int=time.time_ns()),
         incident_id=inc.id,
-        model_name="langgraph_orchestrator",
+        model_name=os.getenv("OLLAMA_MODEL", "gemma4:latest"),
+        execution_status="completed",
+        duration_ms=dur_ms,
         hypotheses=report.get("hypotheses", []),
         checks=report.get("checks", []),
-        confidence_level=report.get("confidence", {}).get("level", "moderate"),
-        confidence_explanation=report.get("confidence", {}).get("explanation", ""),
+        confidence_level=report.get("confidence", {}).get("level", "moderate") if isinstance(report.get("confidence"), dict) else str(report.get("confidence", "moderate")),
+        confidence_explanation=report.get("confidence", {}).get("explanation", "") if isinstance(report.get("confidence"), dict) else "",
     )
     session.add(ai_run)
+    await session.flush()
+
+    for action in report.get("recommended_actions", []):
+        recommendation = AIRecommendation(
+            analysis_run_id=ai_run.id,
+            action_text=action.get("action", ""),
+            runbook_id=action.get("runbook_id"),
+            parameters=action.get("parameters", {}),
+            execution_mode="guarded_execution",
+            risk_level="LOW",
+            requires_approval=action.get("requires_approval", True),
+        )
+        session.add(recommendation)
+
     await session.commit()
 
     return {"status": "analyzed", "report": report}

@@ -24,8 +24,8 @@ class GlpiClient:
         password: Optional[str] = None,
         default_entity_id: int = 0,
     ):
-        self.api_url = (api_url or os.getenv("GLPI_API_URL", "http://localhost:8088/glpi/apirest.php")).rstrip("/")
-        self.app_token = app_token or os.getenv("GLPI_APP_TOKEN", "default_app_token")
+        self.api_url = (api_url or os.getenv("GLPI_API_URL", "http://localhost:8088/apirest.php")).rstrip("/")
+        self.app_token = app_token or os.getenv("GLPI_APP_TOKEN")
         self.user_token = user_token or os.getenv("GLPI_USER_TOKEN")
         self.username = username or os.getenv("GLPI_USERNAME", "glpi")
         self.password = password or os.getenv("GLPI_PASSWORD", "glpi")
@@ -35,8 +35,9 @@ class GlpiClient:
     def _get_headers(self, with_session: bool = True) -> Dict[str, str]:
         headers = {
             "Content-Type": "application/json",
-            "App-Token": self.app_token,
         }
+        if self.app_token:
+            headers["App-Token"] = self.app_token
         if with_session and self._session_token:
             headers["Session-Token"] = self._session_token
         return headers
@@ -96,12 +97,10 @@ class GlpiClient:
         """Recherche un équipement par son nom dans la CMDB GLPI."""
         params = {
             "criteria[0][field]": "1",  # Nom d'hôte
-            "criteria[0][searchtype]": "equals",
+            "criteria[0][searchtype]": "contains",
             "criteria[0][value]": host_name,
-            "forcedisplay[0]": "1",    # Nom
-            "forcedisplay[1]": "2",    # ID
-            "forcedisplay[2]": "5",    # Numéro de série
-            "forcedisplay[3]": "80",   # Entité
+            "forcedisplay[0]": "2",    # ID
+            "forcedisplay[1]": "1",    # Nom
         }
         res = await self._request("GET", "search/Computer", params=params)
         data = res.get("data", [])
@@ -109,7 +108,7 @@ class GlpiClient:
             return None
         row = data[0]
         return GlpiAssetRead(
-            id=int(row.get("2", 0)),
+            id=int(row.get("2", 1)),
             name=str(row.get("1", host_name)),
             item_type="Computer",
             serial=row.get("5"),

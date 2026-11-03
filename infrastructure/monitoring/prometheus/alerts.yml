@@ -1,0 +1,70 @@
+groups:
+  - name: aiops_alerts
+    rules:
+      - alert: AIOpsServiceDown
+        expr: aiops_service_up == 0 or up == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Un service critique AIOps est indisponible"
+          description: "Le composant {{ $labels.service_name }} (ou instance {{ $labels.instance }}) ne répond plus."
+
+      - alert: AIOpsGatewayDown
+        expr: up{job="aiops-api-gateway"} == 0
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "API Gateway FastAPI est indisponible"
+          description: "Le point d'entrée API Gateway (port 8000/8005) ne répond plus aux sondes Prometheus."
+
+      - alert: AIOpsHighDiagnosticLatency
+        expr: (aiops_llm_inference_latency_seconds_sum / clamp_min(aiops_llm_inference_latency_seconds_count, 1)) > 1.0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latence de diagnostic IA élevée (> 1s)"
+          description: "Le temps moyen d'inférence des agents LangGraph dépasse 1000 ms."
+
+      - alert: AIOpsRemediationFailure
+        expr: increase(aiops_remediation_executions_total{status="FAILED"}[5m]) > 0
+        for: 30s
+        labels:
+          severity: high
+        annotations:
+          summary: "Échec d'une remédiation automatisée"
+          description: "Une action de remédiation contrôlée a échoué dans les 5 dernières minutes."
+
+      - alert: AIOpsHighIncidentRate
+        expr: rate(aiops_incidents_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Taux d'incidents anormalement élevé"
+          description: "Le système ingère plus de 0.1 incident/s sur une fenêtre de 5 minutes."
+
+      - alert: AIOpsZabbixAlertStorm
+        expr: rate(aiops_events_ingested_total[1m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tempête d'alertes Zabbix détectée"
+          description: "Plus de 10 événements bruts par seconde sont reçus via les webhooks Zabbix."
+
+  - name: aiops_recording_rules
+    rules:
+      - record: job:aiops_events:rate1m
+        expr: rate(aiops_events_ingested_total[1m])
+
+      - record: job:aiops_incidents:rate5m
+        expr: rate(aiops_incidents_total[5m])
+
+      - record: job:aiops_service_ratio
+        expr: avg(aiops_service_up)
+
+      - record: job:aiops_diagnostic_avg_latency
+        expr: aiops_llm_inference_latency_seconds_sum / clamp_min(aiops_llm_inference_latency_seconds_count, 1)

@@ -43,7 +43,7 @@ class IncidentRead(BaseModel):
     opened_at: datetime
     recovery_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    incident_metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class IncidentCorrelationLink(BaseModel):

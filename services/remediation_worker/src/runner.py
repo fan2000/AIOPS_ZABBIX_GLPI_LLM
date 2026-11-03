@@ -70,11 +70,23 @@ class RemediationRunner:
         # Substitution contrôlée des variables autorisées
         command_str = runbook.template_command.format(**request.parameters)
 
+        import shutil
         cmd_args = []
         if runbook.runner_type == RunbookRunnerType.POWERSHELL:
-            cmd_args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command_str]
+            if shutil.which("powershell.exe"):
+                cmd_args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command_str]
+            elif shutil.which("pwsh"):
+                cmd_args = ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command_str]
+            else:
+                # Fallback Linux pour inspection de processus
+                cmd_args = ["ps", "-eo", "pid,user,%cpu,%mem,comm", "--sort=-%cpu"]
         elif runbook.runner_type == RunbookRunnerType.BASH_SSH:
-            cmd_args = ["bash", "-c", command_str]
+            if shutil.which("bash"):
+                cmd_args = ["bash", "-c", command_str]
+            elif shutil.which("sh"):
+                cmd_args = ["sh", "-c", command_str]
+            else:
+                cmd_args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command_str]
         else:
             cmd_args = ["ansible-playbook", command_str]
 

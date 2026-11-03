@@ -20,6 +20,8 @@ from packages.domain.models.database import (
     AIAnalysisRun,
     AIRecommendation,
     Asset,
+    AuditLog,
+    GlpiTicketLink,
     Incident,
     IncidentEvent,
     RecommendationSource,
@@ -39,6 +41,7 @@ class IncidentWorker:
     async def start(self) -> None:
         """Démarre la boucle de consommation des événements."""
         self.is_running = True
+        print(f"🚀 [IncidentWorker] Démarrage sur le flux '{self.stream_name}' (groupe: {self.group_name}, consumer: {self.consumer_name})", flush=True)
         await redis_streams.ensure_consumer_group(self.stream_name, self.group_name)
 
         while self.is_running:
@@ -51,9 +54,12 @@ class IncidentWorker:
                     block_ms=3000,
                 )
                 for msg_id, payload in messages:
+                    print(f"📥 [IncidentWorker] Événement reçu #{msg_id} : {payload.get('problem')} sur {payload.get('host_name')}", flush=True)
                     await self.process_event(msg_id, payload)
                     await redis_streams.ack_event(self.stream_name, self.group_name, msg_id)
+                    print(f"✅ [IncidentWorker] Événement #{msg_id} acquitté avec succès.", flush=True)
             except Exception as e:
+                print(f"❌ [IncidentWorker] Erreur dans la boucle de consommation: {e}", flush=True)
                 await asyncio.sleep(2.0)
 
     async def process_event(self, msg_id: str, raw_payload: Dict[str, Any]) -> None:
@@ -111,6 +117,16 @@ class IncidentWorker:
                 session.add(incident)
                 await session.flush()
 
+                if glpi_ticket_id:
+                    ticket_link = GlpiTicketLink(
+                        id=uuid.uuid4(),
+                        incident_id=incident.id,
+                        glpi_ticket_id=glpi_ticket_id,
+                        entity_id=entity_id,
+                        glpi_status=1,
+                    )
+                    session.add(ticket_link)
+
             # Enregistrement de l'événement lié
             db_event = IncidentEvent(
                 id=uuid.uuid4(),
@@ -140,8 +156,58 @@ class IncidentWorker:
                     "events": [event.model_dump()],
                     "observations": [],
                 }
+                import time
+                analysis_start = time.time()
                 final_state = await run_incident_analysis(initial_state)
                 report = final_state.get("diagnostic_report")
+                analysis_duration_ms = int((time.time() - analysis_start) * 1000)
+
+                if report:
+                    conf = report.get("confidence", {})
+                    conf_level = conf.get("level", "moderate") if isinstance(conf, dict) else str(conf)
+                    conf_expl = conf.get("explanation", "") if isinstance(conf, dict) else ""
+
+                    ai_run = AIAnalysisRun(
+                        id=uuid.uuid4(),
+                        incident_id=incident.id,
+                        model_name=os.getenv("OLLAMA_MODEL", "gemma4:latest"),
+                        execution_status="completed",
+                        duration_ms=analysis_duration_ms,
+                        hypotheses=report.get("hypotheses", []),
+                        checks=report.get("checks", []),
+                        confidence_level=conf_level,
+                        confidence_explanation=conf_expl,
+                    )
+                    session.add(ai_run)
+                    await session.flush()
+
+                    for action in report.get("recommended_actions", []):
+                        recommendation = AIRecommendation(
+                            id=uuid.uuid4(),
+                            analysis_run_id=ai_run.id,
+                            action_text=action.get("action", ""),
+                            runbook_id=action.get("runbook_id"),
+                            parameters=action.get("parameters", {}),
+                            execution_mode="guarded_execution",
+                            risk_level="LOW",
+                            requires_approval=action.get("requires_approval", True),
+                        )
+                        session.add(recommendation)
+
+                    # Journalisation de l'audit
+                    audit_entry = AuditLog(
+                        id=uuid.uuid4(),
+                        action="INCIDENT_AI_DIAGNOSED",
+                        resource_type="incident",
+                        resource_id=str(incident.id),
+                        details={
+                            "incident_number": incident.incident_number,
+                            "severity": incident.severity,
+                            "duration_ms": analysis_duration_ms,
+                        },
+                    )
+                    session.add(audit_entry)
+                    await session.commit()
 
                 if report and incident.glpi_ticket_id:
                     # Envoi d'un suivi privé dans le ticket GLPI

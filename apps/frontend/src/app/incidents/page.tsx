@@ -20,22 +20,31 @@ export default function IncidentsPage() {
   const [severityFilter, setSeverityFilter] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [searchTerm, setSearchTerm] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchIncidents = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      let url = "http://localhost:8005/api/v1/incidents?limit=50";
+      if (severityFilter) url += `&severity=${encodeURIComponent(severityFilter)}`;
+      if (statusFilter) url += `&status=${encodeURIComponent(statusFilter)}`;
+      const res = await fetch(url, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        setIncidents(Array.isArray(data) ? data : []);
+      } else {
+        setError(`Erreur API Gateway (${res.status} ${res.statusText})`);
+      }
+    } catch (e: any) {
+      setError("Connexion à l'API Gateway impossible sur le port 8005. Vérifiez que le service backend est actif.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchIncidents = async () => {
-      try {
-        let url = "http://localhost:8005/api/v1/incidents?limit=50";
-        if (severityFilter) url += `&severity=${severityFilter}`;
-        if (statusFilter) url += `&status=${statusFilter}`;
-        const res = await fetch(url);
-        if (res.ok) {
-          const data = await res.json();
-          setIncidents(data);
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    };
     fetchIncidents();
   }, [severityFilter, statusFilter]);
 
@@ -55,6 +64,22 @@ export default function IncidentsPage() {
           </p>
         </div>
       </div>
+
+      {/* Message d'erreur de connexion API avec bouton Réessayer */}
+      {error && (
+        <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>{error}</span>
+          </div>
+          <button
+            onClick={() => fetchIncidents()}
+            className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 rounded text-amber-200 transition-all font-semibold"
+          >
+            Réessayer
+          </button>
+        </div>
+      )}
 
       {/* Barre de filtres */}
       <div className="p-4 rounded-xl bg-navy-800 border border-navy-700 flex flex-wrap items-center gap-3">
@@ -97,7 +122,11 @@ export default function IncidentsPage() {
 
       {/* Liste des incidents */}
       <div className="space-y-3">
-        {filtered.length === 0 ? (
+        {loading ? (
+          <div className="p-8 text-center text-slate-400 text-sm bg-navy-800 rounded-xl border border-navy-700 animate-pulse">
+            Chargement des incidents depuis l&apos;API Gateway...
+          </div>
+        ) : filtered.length === 0 ? (
           <div className="p-8 text-center text-slate-400 text-sm bg-navy-800 rounded-xl border border-navy-700">
             Aucun incident ne correspond aux critères.
           </div>

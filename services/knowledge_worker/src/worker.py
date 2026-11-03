@@ -4,7 +4,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 from typing import List
-from sqlalchemy import select
+from sqlalchemy import func, select
 from database.connection import async_session_maker
 from packages.connectors.glpi.src.client import glpi_client
 from packages.domain.models.database import KnowledgeChunk, KnowledgeDocument, KnowledgeSyncJob
@@ -47,6 +47,7 @@ class KnowledgeWorker:
                     existing_doc = (await session.execute(doc_stmt)).scalar_one_or_none()
 
                     if existing_doc and existing_doc.content_hash == content_hash:
+                        existing_doc.last_synced_at = datetime.now(timezone.utc)
                         continue  # Inchangé
 
                     if existing_doc:
@@ -85,9 +86,13 @@ class KnowledgeWorker:
                         session.add(chunk_obj)
                         indexed_chunks += 1
 
+                # Nombre total de documents actifs en base
+                total_docs = (await session.execute(select(func.count(KnowledgeDocument.id)))).scalar() or len(kb_items)
+                total_chunks = (await session.execute(select(func.count(KnowledgeChunk.id)))).scalar() or indexed_chunks
+
                 job.status = "completed"
-                job.documents_imported = imported_docs
-                job.chunks_indexed = indexed_chunks
+                job.documents_imported = total_docs
+                job.chunks_indexed = total_chunks
                 job.finished_at = datetime.now(timezone.utc)
                 await session.commit()
                 return job

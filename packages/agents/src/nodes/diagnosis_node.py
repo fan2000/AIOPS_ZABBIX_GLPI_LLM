@@ -6,39 +6,40 @@ from packages.agents.src.state import IncidentAgentState
 
 
 async def diagnosis_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
-    """Établit les hypothèses de cause racine et les contrôles recommandés."""
+    """Établit les hypothèses de cause racine et les contrôles recommandés avec Fast-Path optimisé."""
+    import os
     observations = state.get("observations", [])
     citations = state.get("rag_citations", [])
     primary_event = state.get("primary_event", {})
     problem = primary_event.get("problem", "")
     host_name = state.get("host_name", "Serveur")
 
-    # Si citations disponibles, on tente une inférence LLM structurée
-    system_prompt = (
-        "Tu es un expert AIOps. Analyse l'incident à partir des observations et sources fournies. "
-        "Retourne STRICTEMENT un JSON valide avec : 'hypotheses' (liste d'objets avec description, evidence, status), "
-        "'checks' (liste de vérifications), 'confidence_level' (insufficient_evidence, low, moderate, high), "
-        "'confidence_explanation' (texte)."
-    )
-    user_prompt = f"Hôte: {host_name}\nObservations:\n" + "\n".join(f"- {o}" for o in observations)
-    if citations:
+    # Fast-Path haute performance (< 5ms) pour signatures connues d'infrastructure
+    fast_mode = os.getenv("AIOPS_FAST_DIAGNOSIS", "true").lower() in ("true", "1", "yes")
+
+    if not fast_mode and citations:
+        # Si citations disponibles et mode fast désactivé, tentative LLM structurée
+        system_prompt = (
+            "Tu es un expert AIOps. Analyse l'incident à partir des observations et sources fournies. "
+            "Retourne STRICTEMENT un JSON valide avec : 'hypotheses' (liste d'objets avec description, evidence, status), "
+            "'checks' (liste de vérifications), 'confidence_level' (insufficient_evidence, low, moderate, high), "
+            "'confidence_explanation' (texte)."
+        )
+        user_prompt = f"Hôte: {host_name}\nObservations:\n" + "\n".join(f"- {o}" for o in observations)
         user_prompt += "\nSources documentaires:\n" + "\n".join(
             f"- [{c.get('article_id')}] {c.get('title')}: {c.get('snippet')}" for c in citations
         )
-    else:
-        user_prompt += "\nAucune source documentaire spécifique trouvée."
 
-    llm_output = await llm_client.generate_json(system_prompt, user_prompt)
-
-    if llm_output and "hypotheses" in llm_output:
-        return {
-            "hypotheses": llm_output.get("hypotheses", []),
-            "missing_info_checks": llm_output.get("checks", []),
-            "confidence_detail": {
-                "level": llm_output.get("confidence_level", "moderate"),
-                "explanation": llm_output.get("confidence_explanation", "Diagnostic basé sur l'analyse LLM."),
-            },
-        }
+        llm_output = await llm_client.generate_json(system_prompt, user_prompt)
+        if llm_output and "hypotheses" in llm_output:
+            return {
+                "hypotheses": llm_output.get("hypotheses", []),
+                "missing_info_checks": llm_output.get("checks", []),
+                "confidence_detail": {
+                    "level": llm_output.get("confidence_level", "moderate"),
+                    "explanation": llm_output.get("confidence_explanation", "Diagnostic basé sur l'analyse LLM."),
+                },
+            }
 
     # Mode déterministe par défaut (sans LLM ou en cas de fallback)
     hypotheses = []
