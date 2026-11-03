@@ -3,16 +3,27 @@
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { 
+  Activity,
+  AlertCircle,
+  AlertOctagon, 
   AlertTriangle, 
   ArrowLeft, 
   BookOpen, 
   CheckCircle2, 
+  Clock,
+  Copy,
   Cpu, 
+  ExternalLink,
   HelpCircle, 
+  Layers,
   Play, 
   RotateCw, 
+  Server,
   ShieldAlert, 
-  Terminal 
+  ShieldCheck,
+  Terminal,
+  Ticket,
+  Zap
 } from "lucide-react";
 
 export default function IncidentDetailPage({
@@ -28,6 +39,7 @@ export default function IncidentDetailPage({
   const [executingAction, setExecutingAction] = useState(false);
   const [executionResult, setExecutionResult] = useState<any>(null);
   const [selectedRunbook, setSelectedRunbook] = useState("rb-collect-top-processes");
+  const [copied, setCopied] = useState(false);
 
   const fetchDetail = async () => {
     try {
@@ -67,7 +79,7 @@ export default function IncidentDetailPage({
       const res = await fetch("http://localhost:8005/api/v1/actions/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: jsonBody({
+        body: JSON.stringify({
           runbook_id: runbookId,
           incident_id: incidentId,
           parameters: paramsObj || {},
@@ -86,14 +98,19 @@ export default function IncidentDetailPage({
     }
   };
 
-  function jsonBody(obj: any) {
-    return JSON.stringify(obj);
-  }
+  const copyOutput = () => {
+    if (executionResult?.stdout) {
+      navigator.clipboard.writeText(executionResult.stdout);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
   if (!incident) {
     return (
-      <div className="p-8 text-center text-slate-400">
-        Chargement de l&apos;incident...
+      <div className="py-24 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
+        <RotateCw className="w-4 h-4 animate-spin text-cyan-400" />
+        <span>Chargement des détails de l&apos;incident #{incidentId.slice(0, 8)}...</span>
       </div>
     );
   }
@@ -102,179 +119,302 @@ export default function IncidentDetailPage({
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
-      {/* Retour et En-tête */}
-      <div className="flex items-center justify-between">
+      {/* Barre d'Action Supérieure & Retour */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-white/[0.06]">
         <Link
           href="/incidents"
-          className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
+          className="btn-tactile inline-flex items-center gap-2 text-xs font-medium text-slate-400 hover:text-white transition-colors"
         >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Retour aux incidents</span>
+          <div className="w-7 h-7 rounded-lg bg-white/[0.04] border border-white/[0.08] flex items-center justify-center">
+            <ArrowLeft className="w-3.5 h-3.5" />
+          </div>
+          <span>Retour à la console</span>
         </Link>
-        <button
-          onClick={handleReanalyze}
-          disabled={analyzing}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-navy-800 border border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10 transition-all disabled:opacity-50"
-        >
-          <RotateCw className={`w-3.5 h-3.5 ${analyzing ? "animate-spin" : ""}`} />
-          <span>{analyzing ? "Analyse en cours..." : "Réanalyser avec LangGraph"}</span>
-        </button>
-      </div>
 
-      <div className="p-6 rounded-xl bg-navy-800 border border-navy-700 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-sm font-bold text-cyan-400">{incident.incident_number}</span>
-            <span className="px-2 py-0.5 rounded text-xs font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
-              {incident.severity}
-            </span>
-            <span className="px-2 py-0.5 rounded text-xs font-medium bg-slate-700 text-slate-300">
-              {incident.status}
-            </span>
-          </div>
-          <div className="text-xs text-slate-400">
-            Ticket GLPI : <strong className="text-white font-mono">{incident.glpi_ticket_id ? `#${incident.glpi_ticket_id}` : "En cours"}</strong>
-          </div>
-        </div>
-        <h2 className="text-xl font-bold text-white">{incident.title}</h2>
-        <div className="flex flex-wrap items-center gap-6 text-xs text-slate-400 border-t border-navy-700 pt-3">
-          <span>Hôte Zabbix : <strong className="text-slate-200">{incident.primary_asset_name}</strong></span>
-          <span>Zabbix Host ID : <strong className="text-slate-200">{incident.zabbix_host_id}</strong></span>
-          <span>Détecté le : {new Date(incident.opened_at).toLocaleString()}</span>
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={handleReanalyze}
+            disabled={analyzing}
+            className="btn-tactile flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-white/[0.04] hover:bg-white/[0.08] border border-cyan-500/30 text-cyan-300 transition-all disabled:opacity-50"
+          >
+            <RotateCw className={`w-3.5 h-3.5 ${analyzing ? "animate-spin" : ""}`} />
+            <span>{analyzing ? "Analyse LangGraph en cours..." : "Réanalyser avec LangGraph"}</span>
+          </button>
         </div>
       </div>
 
-      {/* Grille : Événements Zabbix & Diagnostic IA */}
+      {/* Carte d'Identité de l'Incident (Double-Bezel Architecture) */}
+      <div className="bezel-shell">
+        <div className="bezel-core p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-sm font-bold text-cyan-400 bg-cyan-500/10 px-3 py-1 rounded-lg border border-cyan-500/30">
+                {incident.incident_number}
+              </span>
+              <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
+                incident.severity === "HIGH" || incident.severity === "DISASTER"
+                  ? "bg-rose-500/15 text-rose-400 border border-rose-500/30"
+                  : "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  incident.severity === "HIGH" || incident.severity === "DISASTER" ? "bg-rose-400 animate-ping" : "bg-amber-400"
+                }`}></span>
+                {incident.severity}
+              </span>
+              <span className="px-2.5 py-1 rounded text-xs font-mono font-medium bg-white/[0.05] border border-white/[0.08] text-slate-300">
+                {incident.status}
+              </span>
+            </div>
+
+            <div className="text-xs text-slate-400 flex items-center gap-2">
+              <Ticket className="w-4 h-4 text-cyan-400" />
+              <span>Ticket GLPI lié :</span>
+              {incident.glpi_ticket_id ? (
+                <span className="text-cyan-300 font-mono font-bold">#{incident.glpi_ticket_id}</span>
+              ) : (
+                <span className="text-slate-500 italic">Création en cours...</span>
+              )}
+            </div>
+          </div>
+
+          <h2 className="text-xl md:text-2xl font-bold text-white tracking-tight">
+            {incident.title}
+          </h2>
+
+          <div className="flex flex-wrap items-center gap-6 text-xs text-slate-400 border-t border-white/[0.06] pt-4 font-mono">
+            <span className="flex items-center gap-1.5 text-slate-300 font-sans">
+              <Server className="w-3.5 h-3.5 text-slate-500" />
+              <span>Hôte Zabbix :</span>
+              <strong className="text-white font-medium">{incident.primary_asset_name}</strong>
+            </span>
+            <span>Host ID : <strong className="text-cyan-400">{incident.zabbix_host_id}</strong></span>
+            <span className="flex items-center gap-1 text-slate-500">
+              <Clock className="w-3.5 h-3.5" />
+              <span>Détecté : {new Date(incident.opened_at).toLocaleString()}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Grille Bento : Événements Zabbix & Diagnostic IA */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Événements Zabbix liés */}
-        <div className="p-6 rounded-xl bg-navy-800 border border-navy-700 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-white flex items-center gap-2">
-              <Cpu className="w-4 h-4 text-cyan-400" />
-              Événements Zabbix Corrélés ({incident.events_count})
-            </h3>
-          </div>
-          <div className="space-y-2.5">
-            {incident.events.map((ev: any, idx: number) => (
-              <div key={idx} className="p-3 rounded-lg bg-navy-900 border border-navy-700/60 text-xs space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-cyan-400 font-semibold">Event #{ev.event_id}</span>
-                  <span className="text-slate-400">{new Date(ev.timestamp).toLocaleTimeString()}</span>
+        {/* Événements Zabbix Liés */}
+        <div className="bezel-shell">
+          <div className="bezel-core p-5 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Cpu className="w-4 h-4 text-cyan-400" />
+                <span>Événements Zabbix Corrélés ({incident.events_count})</span>
+              </h3>
+              <span className="text-[10px] font-mono text-slate-500">Fenêtre 15 min</span>
+            </div>
+
+            <div className="space-y-2.5">
+              {incident.events.map((ev: any, idx: number) => (
+                <div
+                  key={idx}
+                  className="p-3.5 rounded-xl bg-obsidian-950/80 border border-white/[0.06] text-xs space-y-1.5 hover:border-cyan-500/30 transition-colors"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-cyan-400 font-bold">Event #{ev.event_id}</span>
+                    <span className="text-[11px] font-mono text-slate-500">
+                      {new Date(ev.timestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <div className="text-slate-300 font-medium">
+                    Métrique : <span className="font-mono text-slate-200">{ev.metric || "N/A"}</span>
+                  </div>
+                  {ev.value !== null && (
+                    <div className="text-slate-400 flex items-center gap-2">
+                      <span>Valeur relevée :</span>
+                      <span className="font-mono font-bold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">
+                        {ev.value}
+                      </span>
+                    </div>
+                  )}
                 </div>
-                <div className="text-slate-300 font-medium">Métrique : {ev.metric || "N/A"}</div>
-                {ev.value !== null && (
-                  <div className="text-slate-400">Valeur mesurée : <span className="text-rose-400 font-bold">{ev.value}</span></div>
-                )}
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </div>
 
         {/* Diagnostic IA & Hypothèses */}
-        <div className="p-6 rounded-xl bg-navy-800 border border-navy-700 space-y-4">
-          <h3 className="text-sm font-bold text-white flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400" />
-            Hypothèses de Diagnostic IA
-          </h3>
-
-          {!analysis ? (
-            <p className="text-xs text-slate-400">Aucune analyse IA disponible. Cliquez sur &quot;Réanalyser&quot;.</p>
-          ) : (
-            <div className="space-y-3">
-              <div className="p-3 rounded-lg bg-navy-900/80 border border-cyan-500/20 text-xs">
-                <div className="text-cyan-400 font-semibold mb-1">Niveau de Confiance : {analysis.confidence_level}</div>
-                <p className="text-slate-300">{analysis.confidence_explanation}</p>
-              </div>
-
-              <div className="space-y-2">
-                <h4 className="text-xs font-semibold text-slate-400 uppercase">Hypothèses formulées :</h4>
-                {analysis.hypotheses.map((h: any, i: number) => (
-                  <div key={i} className="p-2.5 rounded-lg bg-navy-900 border border-navy-700 text-xs space-y-1">
-                    <div className="flex items-center justify-between font-semibold text-white">
-                      <span>{h.description}</span>
-                      <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">{h.status}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {analysis.checks && analysis.checks.length > 0 && (
-                <div className="space-y-1 text-xs">
-                  <h4 className="font-semibold text-slate-400 uppercase">Vérifications suggérées :</h4>
-                  <ul className="list-disc list-inside text-slate-300 space-y-0.5">
-                    {analysis.checks.map((c: string, idx: number) => (
-                      <li key={idx}>{c}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+        <div className="bezel-shell">
+          <div className="bezel-core p-5 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400" />
+                <span>Hypothèses de Diagnostic IA</span>
+              </h3>
+              <span className="text-[10px] font-mono text-cyan-400">LangGraph Swarm</span>
             </div>
-          )}
+
+            {!analysis ? (
+              <div className="py-10 text-center text-slate-400 text-xs space-y-2">
+                <p>Aucune analyse IA disponible pour cet incident.</p>
+                <p className="text-slate-500">Cliquez sur &quot;Réanalyser avec LangGraph&quot; ci-dessus.</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* Score de Confiance */}
+                <div className="p-3.5 rounded-xl bg-cyan-500/10 border border-cyan-500/25 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-cyan-300">
+                    <span>Niveau de Confiance IA :</span>
+                    <span className="font-mono uppercase tracking-wider">{analysis.confidence_level}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    {analysis.confidence_explanation}
+                  </p>
+                </div>
+
+                {/* Hypothèses formulées */}
+                <div className="space-y-2">
+                  <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+                    Hypothèses Qualifiées :
+                  </div>
+                  {analysis.hypotheses.map((h: any, i: number) => (
+                    <div
+                      key={i}
+                      className="p-3 rounded-xl bg-obsidian-950/80 border border-white/[0.06] text-xs flex items-center justify-between gap-2"
+                    >
+                      <span className="text-slate-200 font-medium">{h.description}</span>
+                      <span className="text-[9px] uppercase font-mono font-bold px-2 py-0.5 rounded bg-white/[0.05] border border-white/[0.08] text-slate-300 shrink-0">
+                        {h.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Vérifications suggérées */}
+                {analysis.checks && analysis.checks.length > 0 && (
+                  <div className="space-y-1.5 pt-2 border-t border-white/[0.06]">
+                    <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+                      Vérifications Recommandées :
+                    </div>
+                    <ul className="space-y-1 text-xs text-slate-300">
+                      {analysis.checks.map((c: string, idx: number) => (
+                        <li key={idx} className="flex items-start gap-2">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400 mt-0.5 shrink-0" />
+                          <span>{c}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
       {/* Module de Remédiation Contrôlée (Niveau 3) */}
-      <div className="p-6 rounded-xl bg-navy-800 border border-cyan-500/40 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-bold text-white flex items-center gap-2">
-            <Terminal className="w-5 h-5 text-cyan-400" />
-            Remédiation Contrôlée (Validation Technicien Niveau 3)
-          </h3>
-          <span className="text-xs text-emerald-400 font-mono">Mode Réel & Sandbox Sécurisée</span>
-        </div>
-
-        <p className="text-xs text-slate-300">
-          L&apos;IA a identifié des runbooks déclaratifs sécurisés du catalogue. Sélectionnez une action préapprouvée et déclenchez son exécution contrôlée :
-        </p>
-
-        <div className="p-4 rounded-xl bg-navy-900 border border-navy-700 space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex-1 space-y-1">
-              <label className="text-xs font-semibold text-slate-400">Runbook Certifié à Exécuter :</label>
-              <select
-                value={selectedRunbook}
-                onChange={(e) => setSelectedRunbook(e.target.value)}
-                className="w-full bg-navy-800 border border-navy-700 text-white rounded-lg p-2.5 text-xs focus:ring-1 focus:ring-cyan-400 outline-none"
-              >
-                <option value="rb-collect-top-processes">rb-collect-top-processes : Collecte des 10 processus les plus consommateurs</option>
-                <option value="rb-win-service-restart">rb-win-service-restart : Redémarrage de service supervisé</option>
-                <option value="rb-linux-service-restart">rb-linux-service-restart : Redémarrage service systemd</option>
-                <option value="rb-disk-cleanup-logs">rb-disk-cleanup-logs : Purge préventive des logs archivés</option>
-              </select>
+      <div className="bezel-shell">
+        <div className="bezel-core p-6 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-white/[0.06]">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400 shadow-glow-cyan">
+                <Terminal className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white tracking-tight">
+                  Remédiation Contrôlée (Validation Technicien Niveau 3)
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Sandbox isolée sans shell arbitraire avec traçabilité d&apos;audit infalsifiable
+                </p>
+              </div>
             </div>
-            <div className="sm:self-end">
-              <button
-                onClick={() => {
-                  let p: any = {};
-                  if (selectedRunbook === "rb-win-service-restart") p = { service_name: "Spooler" };
-                  if (selectedRunbook === "rb-linux-service-restart") p = { service_name: "nginx" };
-                  handleExecuteRunbook(selectedRunbook, p);
-                }}
-                disabled={executingAction}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold bg-cyan-500 hover:bg-cyan-400 text-navy-900 transition-all disabled:opacity-50 shrink-0"
-              >
-                <Play className="w-4 h-4 fill-current" />
-                <span>{executingAction ? "Exécution réelle..." : "Approuver & Exécuter"}</span>
-              </button>
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              Sandbox Sécurisée
+            </span>
+          </div>
+
+          <p className="text-xs text-slate-300 leading-relaxed">
+            L&apos;IA a identifié des runbooks déclaratifs sécurisés du catalogue. Sélectionnez une action préapprouvée et déclenchez son exécution contrôlée :
+          </p>
+
+          <div className="p-4 rounded-xl bg-obsidian-950/80 border border-white/[0.08] space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+              <div className="flex-1 space-y-1.5">
+                <label className="text-xs font-semibold text-slate-300">
+                  Runbook Certifié du Catalogue :
+                </label>
+                <select
+                  value={selectedRunbook}
+                  onChange={(e) => setSelectedRunbook(e.target.value)}
+                  className="w-full bg-obsidian-900 border border-white/[0.12] text-white rounded-xl p-2.5 text-xs focus:ring-1 focus:ring-cyan-400 outline-none"
+                >
+                  <option value="rb-collect-top-processes">rb-collect-top-processes : Collecte des 10 processus les plus consommateurs</option>
+                  <option value="rb-win-service-restart">rb-win-service-restart : Redémarrage de service supervisé</option>
+                  <option value="rb-linux-service-restart">rb-linux-service-restart : Redémarrage service systemd</option>
+                  <option value="rb-disk-cleanup-logs">rb-disk-cleanup-logs : Purge préventive des logs archivés</option>
+                </select>
+              </div>
+
+              <div>
+                <button
+                  onClick={() => {
+                    let p: any = {};
+                    if (selectedRunbook === "rb-win-service-restart") p = { service_name: "Spooler" };
+                    if (selectedRunbook === "rb-linux-service-restart") p = { service_name: "nginx" };
+                    handleExecuteRunbook(selectedRunbook, p);
+                  }}
+                  disabled={executingAction}
+                  className="btn-tactile group relative inline-flex items-center gap-3 px-5 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-cyan-500 to-cyan-600 hover:from-cyan-400 hover:to-cyan-500 shadow-glow-cyan transition-all disabled:opacity-50 shrink-0"
+                >
+                  <span>{executingAction ? "Exécution en cours..." : "Approuver & Exécuter"}</span>
+                  <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center">
+                    {executingAction ? (
+                      <RotateCw className="w-3 h-3 text-white animate-spin" />
+                    ) : (
+                      <Play className="w-3 h-3 text-white fill-current group-hover:translate-x-0.5 transition-transform" />
+                    )}
+                  </div>
+                </button>
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Résultat d'exécution en direct */}
-        {executionResult && (
-          <div className="p-4 rounded-xl bg-navy-900 border border-emerald-500/40 space-y-2">
-            <div className="flex items-center justify-between text-xs font-semibold text-emerald-400">
-              <span className="flex items-center gap-1.5">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                Exécution réelle terminée (Code retour: {executionResult.exit_code})
-              </span>
-              <span>Durée: {executionResult.duration_seconds}s</span>
+          {/* Résultat d'Exécution en Direct dans Console Professionnelle */}
+          {executionResult && (
+            <div className="bezel-shell">
+              <div className="bezel-core p-4 space-y-3 bg-black/80">
+                <div className="flex items-center justify-between text-xs pb-2 border-b border-white/[0.08]">
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500/80"></span>
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500/80"></span>
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/80"></span>
+                    </div>
+                    <span className="text-slate-400 font-mono text-[11px] ml-2">Console de Remédiation</span>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <span className="inline-flex items-center gap-1.5 text-emerald-400 font-semibold font-mono text-[11px]">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Code retour : {executionResult.exit_code}
+                    </span>
+                    <span className="text-slate-500 font-mono text-[11px]">
+                      Durée : {executionResult.duration_seconds}s
+                    </span>
+                    <button
+                      onClick={copyOutput}
+                      className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+                      title="Copier la sortie"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <pre className="p-3 rounded-lg bg-obsidian-950/90 font-mono text-[11px] text-cyan-200 overflow-x-auto whitespace-pre-wrap leading-relaxed border border-white/[0.04]">
+                  {executionResult.stdout || "(Exécution terminée avec sortie vide)"}
+                </pre>
+              </div>
             </div>
-            <pre className="p-3 rounded bg-black/60 font-mono text-[11px] text-slate-300 overflow-x-auto whitespace-pre-wrap">
-              {executionResult.stdout || "(Sortie vide)"}
-            </pre>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

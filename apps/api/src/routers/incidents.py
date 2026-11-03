@@ -1,5 +1,7 @@
 """Gestion et consultation des incidents AIOps et de leurs diagnostics."""
 
+import os
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -148,7 +150,7 @@ async def trigger_incident_analysis(
 
     # Persistance de l'analyse
     ai_run = AIAnalysisRun(
-        id=UUID(int=time.time_ns()),
+        id=uuid.uuid4(),
         incident_id=inc.id,
         model_name=os.getenv("OLLAMA_MODEL", "gemma4:latest"),
         execution_status="completed",

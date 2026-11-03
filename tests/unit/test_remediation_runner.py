@@ -46,9 +46,40 @@ def test_parameter_validation_rejection_forbidden_value():
             "required": ["service_name"],
         },
     )
-    # Tentative d'injection ou de service non autorisé
+    # Service non autorisé dans la liste blanche
     with pytest.raises(ValueError, match="n'est pas dans la liste blanche"):
-        runner.validate_parameters(rb, {"service_name": "ArbitraryService; rm -rf /"})
+        runner.validate_parameters(rb, {"service_name": "UnauthorizedService"})
+
+
+def test_command_injection_rejection_cwe_78():
+    """Vérifie le blocage strict des tentatives d'injection de commandes OS (CWE-78)."""
+    runner = RemediationRunner(simulation_mode=True)
+    rb = RunbookDefinition(
+        id="rb-custom-diagnostic",
+        name="Diagnostic personnalisé",
+        description="Custom diag",
+        runner_type=RunbookRunnerType.POWERSHELL,
+        target_os=TargetOS.WINDOWS,
+        template_command="Get-Service -Name {service_name}",
+        parameter_schema={
+            "type": "object",
+            "properties": {"service_name": {"type": "string"}},
+            "required": ["service_name"],
+        },
+    )
+    # Vecteurs d'injection shell typiques
+    injection_payloads = [
+        "Spooler; whoami",
+        "nginx & net user",
+        "service | Invoke-Expression",
+        "service`id`",
+        "$(whoami)",
+        "service\ncalc.exe",
+        "test > C:\\pwned.txt",
+    ]
+    for payload in injection_payloads:
+        with pytest.raises(ValueError, match="Caractères shell interdits|Format de valeur non autorisé"):
+            runner.validate_parameters(rb, {"service_name": payload})
 
 
 @pytest.mark.asyncio

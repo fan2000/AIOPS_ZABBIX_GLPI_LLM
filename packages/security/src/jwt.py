@@ -8,7 +8,17 @@ from passlib.context import CryptContext
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256", "bcrypt"], deprecated="auto")
 
-SECRET_KEY = os.getenv("APP_SECRET_KEY", "change-this-ultra-secure-random-secret-key-in-production-min32chars")
+DEFAULT_SECRET_PLACEHOLDER = "change-this-ultra-secure-random-secret-key-in-production-min32chars"
+SECRET_KEY = os.getenv("APP_SECRET_KEY", DEFAULT_SECRET_PLACEHOLDER)
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+
+if ENVIRONMENT == "production":
+    if SECRET_KEY == DEFAULT_SECRET_PLACEHOLDER or len(SECRET_KEY) < 32:
+        raise RuntimeError(
+            "CRITICAL SECURITY CONFIGURATION ERROR (CWE-798): "
+            "Production environment requires a unique, secure APP_SECRET_KEY of at least 32 characters."
+        )
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 480  # 8 heures de session
 

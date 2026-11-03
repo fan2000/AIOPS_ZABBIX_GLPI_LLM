@@ -1,6 +1,7 @@
 """Worker asynchrone de traitement et d'orchestration des incidents Zabbix / GLPI."""
 
 import asyncio
+import html
 import json
 import os
 import uuid
@@ -210,13 +211,19 @@ class IncidentWorker:
                     await session.commit()
 
                 if report and incident.glpi_ticket_id:
-                    # Envoi d'un suivi privé dans le ticket GLPI
+                    # Envoi d'un suivi privé dans le ticket GLPI avec assainissement HTML (CWE-79)
+                    escaped_hypotheses = ", ".join(html.escape(str(h.get('description', ''))) for h in report.get('hypotheses', []))
+                    escaped_checks = ", ".join(html.escape(str(c)) for c in report.get('checks', []))
+                    escaped_actions = ", ".join(html.escape(str(a.get('action', ''))) for a in report.get('recommended_actions', []))
+                    conf_level = html.escape(str(report.get('confidence', {}).get('level', '')))
+                    conf_expl = html.escape(str(report.get('confidence', {}).get('explanation', '')))
+
                     followup_text = (
                         f"<strong>[AI IT Operations - Analyse Diagnostique]</strong><br/>"
-                        f"<strong>Hypothèses :</strong> {', '.join(h['description'] for h in report.get('hypotheses', []))}<br/>"
-                        f"<strong>Contrôles recommandés :</strong> {', '.join(report.get('checks', []))}<br/>"
-                        f"<strong>Actions proposées :</strong> {', '.join(a['action'] for a in report.get('recommended_actions', []))}<br/>"
-                        f"<strong>Confiance :</strong> {report.get('confidence', {}).get('level')} ({report.get('confidence', {}).get('explanation')})"
+                        f"<strong>Hypothèses :</strong> {escaped_hypotheses}<br/>"
+                        f"<strong>Contrôles recommandés :</strong> {escaped_checks}<br/>"
+                        f"<strong>Actions proposées :</strong> {escaped_actions}<br/>"
+                        f"<strong>Confiance :</strong> {conf_level} ({conf_expl})"
                     )
                     try:
                         await glpi_client.add_private_followup(

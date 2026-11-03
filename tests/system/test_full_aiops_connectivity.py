@@ -58,7 +58,7 @@ def check_tcp_port(host: str, port: int, timeout: float = 3.0) -> bool:
         return False
 
 
-async def check_http_endpoint(url: str, timeout: float = 5.0) -> Tuple[bool, int, str]:
+async def check_http_endpoint(url: str, timeout: float = 15.0) -> Tuple[bool, int, str]:
     """Interroge un endpoint HTTP et retourne son statut."""
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:

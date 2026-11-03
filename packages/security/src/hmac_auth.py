@@ -6,9 +6,19 @@ import os
 from typing import Optional
 
 
+DEFAULT_HMAC_PLACEHOLDER = "zabbix-webhook-shared-hmac-secret-key-32chars"
+
+
 def get_webhook_secret() -> str:
-    """Retourne la clé secrète configurée pour les webhooks Zabbix."""
-    return os.getenv("ZABBIX_WEBHOOK_SECRET", "zabbix-webhook-shared-hmac-secret-key-32chars")
+    """Retourne la clé secrète configurée pour les webhooks Zabbix avec garde de production."""
+    secret = os.getenv("ZABBIX_WEBHOOK_SECRET", DEFAULT_HMAC_PLACEHOLDER)
+    env = os.getenv("ENVIRONMENT", "development").lower()
+    if env == "production" and (secret == DEFAULT_HMAC_PLACEHOLDER or len(secret) < 32):
+        raise RuntimeError(
+            "CRITICAL SECURITY CONFIGURATION ERROR (CWE-798): "
+            "Production environment requires a unique, secure ZABBIX_WEBHOOK_SECRET of at least 32 characters."
+        )
+    return secret
 
 
 def verify_hmac_signature(payload_bytes: bytes, signature_header: Optional[str]) -> bool:

@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from apps.api.src.dependencies.auth import AuthenticatedUserContext, get_current_user
 from database.connection import get_db_session
 from packages.contracts.src.runbook import (
     ExecutionStatus,
@@ -42,14 +43,22 @@ async def list_runbooks(session: AsyncSession = Depends(get_db_session)) -> List
 @router.post("/execute", response_model=Dict[str, Any])
 async def execute_runbook_action(
     request: RunbookExecutionRequest,
+    current_user: AuthenticatedUserContext = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> Dict[str, Any]:
-    """Exécute de façon contrôlée et auditée un runbook préalablement approuvé."""
+    """Exécute de façon contrôlée et auditée un runbook préalablement approuvé avec RBAC (CWE-306/CWE-285)."""
     # 1. Vérification de l'existence du runbook
     stmt = select(Runbook).where(Runbook.identifier == request.runbook_id, Runbook.is_enabled == True)
     rb = (await session.execute(stmt)).scalar_one_or_none()
     if not rb:
         raise HTTPException(status_code=404, detail="Runbook introuvable ou désactivé")
+
+    # 2. Contrôle RBAC : vérification des privilèges de l'utilisateur connecté
+    if not current_user.has_sufficient_role(rb.required_role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Droits insuffisants : le rôle '{current_user.role}' ne dispose pas des privilèges nécessaires pour exécuter ce runbook (requis : '{rb.required_role}')",
+        )
 
     rb_def = RunbookDefinition(
         id=rb.identifier,
@@ -63,18 +72,20 @@ async def execute_runbook_action(
         template_command=rb.template_command,
     )
 
-    # 2. Exécution dans le runner sandboxé
+    # 3. Exécution dans le runner sandboxé
     try:
         result = await remediation_runner.execute(rb_def, request)
     except ValueError as val_err:
         raise HTTPException(status_code=400, detail=str(val_err))
 
-    # 3. Enregistrement en base d'audit
+    # 4. Enregistrement en base d'audit avec l'identité réelle vérifiée
+    effective_approver = current_user.username or request.approved_by_user_id
+
     execution_record = ActionExecution(
         id=result.execution_id,
         incident_id=request.incident_id,
         runbook_identifier=request.runbook_id,
-        approved_by=request.approved_by_user_id,
+        approved_by=effective_approver,
         execution_status=result.status.value,
         parameters=request.parameters,
         exit_code=result.exit_code,
@@ -90,9 +101,11 @@ async def execute_runbook_action(
         action="RUNBOOK_EXECUTED",
         resource_type="runbook",
         resource_id=request.runbook_id,
+        user_id=current_user.id,
         details={
             "incident_id": str(request.incident_id),
-            "approved_by": request.approved_by_user_id,
+            "approved_by": effective_approver,
+            "user_role": current_user.role,
             "status": result.status.value,
             "exit_code": result.exit_code,
         },

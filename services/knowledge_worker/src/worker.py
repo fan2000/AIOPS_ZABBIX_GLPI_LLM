@@ -4,7 +4,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 from typing import List
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from database.connection import async_session_maker
 from packages.connectors.glpi.src.client import glpi_client
 from packages.domain.models.database import KnowledgeChunk, KnowledgeDocument, KnowledgeSyncJob
@@ -56,6 +56,8 @@ class KnowledgeWorker:
                         existing_doc.version += 1
                         existing_doc.last_synced_at = datetime.now(timezone.utc)
                         doc_obj = existing_doc
+                        # Nettoyage des anciens fragments pour éviter les doublons/zombies
+                        await session.execute(delete(KnowledgeChunk).where(KnowledgeChunk.document_id == existing_doc.id))
                     else:
                         doc_obj = KnowledgeDocument(
                             id=uuid.uuid4(),

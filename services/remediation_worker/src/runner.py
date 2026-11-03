@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import shlex
 import time
 from typing import Any, Dict, Optional
@@ -14,6 +15,11 @@ from packages.contracts.src.runbook import (
     RunbookRunnerType,
 )
 
+# Caractères strictement interdits dans les paramètres de runbook (prévention injection shell CWE-78)
+FORBIDDEN_SHELL_CHARS_REGEX = re.compile(r'[;&|`$><()\{\}\[\]!\\\'"\r\n\t]')
+SAFE_PARAM_VALUE_REGEX = re.compile(r'^[a-zA-Z0-9_\-\.\/\:\ ]+$')
+MAX_PARAM_LENGTH = 128
+
 
 class RemediationRunner:
     """Exécuteur sécurisé de runbooks sans shell arbitraire avec isolation et timeout."""
@@ -22,7 +28,7 @@ class RemediationRunner:
         self.simulation_mode = simulation_mode or os.getenv("LAB_MODE_ENABLED", "false").lower() == "true"
 
     def validate_parameters(self, runbook: RunbookDefinition, parameters: Dict[str, Any]) -> None:
-        """Vérifie que les paramètres fournis respectent le schéma et les listes blanches."""
+        """Vérifie que les paramètres fournis respectent le schéma, la sûreté shell et les listes blanches."""
         schema = runbook.parameter_schema
         required_fields = schema.get("required", [])
         for field in required_fields:
@@ -33,6 +39,27 @@ class RemediationRunner:
         for key, val in parameters.items():
             if key not in properties:
                 raise ValueError(f"Paramètre non autorisé : '{key}' n'est pas dans le schéma du runbook")
+
+            # Validation du type et de la valeur
+            val_str = str(val)
+
+            # 1. Vérification de la longueur maximale
+            if len(val_str) > MAX_PARAM_LENGTH:
+                raise ValueError(f"Paramètre '{key}' trop long ({len(val_str)} caractères, max: {MAX_PARAM_LENGTH})")
+
+            # 2. Rejet immédiat de tout caractère shell dangereux (CWE-78)
+            if FORBIDDEN_SHELL_CHARS_REGEX.search(val_str):
+                raise ValueError(
+                    f"Sécurité : Caractères shell interdits détectés dans le paramètre '{key}'"
+                )
+
+            # 3. Vérification de conformité alphanumérique sûre
+            if not SAFE_PARAM_VALUE_REGEX.match(val_str):
+                raise ValueError(
+                    f"Sécurité : Format de valeur non autorisé pour le paramètre '{key}'"
+                )
+
+            # 4. Vérification de la liste blanche enum si déclarée
             allowed_enum = properties[key].get("enum")
             if allowed_enum and val not in allowed_enum:
                 raise ValueError(

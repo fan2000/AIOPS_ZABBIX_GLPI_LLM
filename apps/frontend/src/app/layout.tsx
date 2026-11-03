@@ -14,9 +14,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="fr" className="dark">
-      <body className="flex min-h-screen bg-navy-900 text-slate-100">
+      <body className="flex min-h-screen bg-obsidian-950 text-slate-100 antialiased selection:bg-cyan-500/30 selection:text-cyan-200">
         <Navigation />
-        <main className="flex-1 overflow-y-auto p-8">{children}</main>
+        <main className="flex-1 overflow-y-auto px-6 py-8 md:px-10 lg:px-12">{children}</main>
       </body>
     </html>
   );

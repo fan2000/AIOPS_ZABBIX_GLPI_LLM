@@ -320,7 +320,7 @@ AIOPS_ZABBIX_GLPI_LLM/
 ├── infrastructure/
 │   ├── docker/                  # Dockerfiles durcis pour API, Worker et Frontend
 │   └── monitoring/              # Configs Prometheus & Grafana Dashboards
-├── tests/                       # 24 tests unitaires, d'intégration et 10 scénarios
+├── tests/                       # 38 tests unitaires, de sécurité RBAC/CWE, d'intégration et 10 scénarios
 ├── docker-compose.yml           # Déploiement multi-services conteneurisé
 ├── pyproject.toml               # Configuration Python, dépendances et build Hatchling
 ├── start_windows.ps1 / .bat     # Lanceurs natifs Windows

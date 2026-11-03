@@ -10,6 +10,7 @@ from packages.domain.models.database import KnowledgeChunk, KnowledgeDocument
 from packages.rag.src.embeddings import embeddings_service
 
 SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.20"))
+MAX_QUERY_LENGTH = 500
 
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
@@ -39,10 +40,12 @@ class HybridRetriever:
         allowed_entities: Optional[List[str]] = None,
     ) -> List[KnowledgeSourceCitation]:
         """Exécute une recherche hybride et retourne les passages sourcés qualifiés."""
-        if not query.strip():
+        if not query or not query.strip():
             return []
 
-        query_vector = await embeddings_service.get_embedding(query)
+        # Borne maximale pour prévenir le déni de service et la surconsommation CPU (CWE-20 / ReDoS)
+        clean_query = query.strip()[:MAX_QUERY_LENGTH]
+        query_vector = await embeddings_service.get_embedding(clean_query)
         entities_filter = allowed_entities or [entity_id, "0"]
 
         # 1. Sélection des chunks éligibles par entité
