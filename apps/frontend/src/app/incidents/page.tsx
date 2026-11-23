@@ -29,6 +29,13 @@ interface Incident {
   opened_at: string;
 }
 
+function cleanDisplay(val: any, fallback: string = "N/A"): string {
+  if (val === null || val === undefined) return fallback;
+  const s = String(val).trim();
+  if (/^\{[A-Z0-9_\.]+\}$/.test(s)) return fallback;
+  return s;
+}
+
 export default function IncidentsPage() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [severityFilter, setSeverityFilter] = useState<string>("");
@@ -206,13 +213,13 @@ export default function IncidentsPage() {
                   </div>
 
                   <h4 className="text-sm md:text-base font-semibold text-white tracking-tight truncate">
-                    {inc.title}
+                    {cleanDisplay(inc.title, "Incident IT")}
                   </h4>
 
                   <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400">
                     <span className="flex items-center gap-1.5 text-slate-300">
                       <Server className="w-3.5 h-3.5 text-slate-500" />
-                      <strong>{inc.primary_asset_name}</strong>
+                      <strong>{cleanDisplay(inc.primary_asset_name, "SRV-TEST-01")}</strong>
                     </span>
                     <span className="flex items-center gap-1.5">
                       <Ticket className="w-3.5 h-3.5 text-cyan-500" />

@@ -16,6 +16,14 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN pip install --no-deps -e .
+RUN pip install --no-deps -e . \
+    && groupadd -g 10001 aiops \
+    && useradd -u 10001 -g aiops -s /sbin/nologin -m aiops \
+    && chown -R aiops:aiops /app
+
+USER aiops
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD pgrep -f "services.incident_worker" > /dev/null || exit 1
 
 CMD ["python", "-u", "-m", "services.incident_worker.src.main"]

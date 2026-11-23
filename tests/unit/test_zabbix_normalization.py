@@ -57,3 +57,31 @@ def test_normalize_zabbix_payload_full():
     assert normalized.value == 96.4
     assert normalized.ip_address == "192.168.1.50"
     assert len(normalized.idempotency_key) == 64
+
+
+def test_normalize_zabbix_payload_unexpanded_macros():
+    """Vérifie que les macros Zabbix brutes envoyées lors d'un test webhook sont assainies."""
+    raw_payload = {
+        "event_id": "{EVENT.ID}",
+        "event_type": "{EVENT.VALUE}",
+        "host_id": "{HOST.ID}",
+        "host_name": "{HOST.NAME}",
+        "trigger_id": "{TRIGGER.ID}",
+        "severity": "{TRIGGER.SEVERITY}",
+        "problem": "{EVENT.NAME}",
+        "metric": "{ITEM.KEY}",
+        "value": "{ITEM.VALUE}",
+        "timestamp": "2026-11-03T15:20:10Z",
+    }
+    normalized = normalize_zabbix_payload(raw_payload)
+
+    # Doit avoir été assaini avec des valeurs de test valides au lieu des macros littérales
+    assert "{" not in normalized.event_id
+    assert "{" not in normalized.host_name
+    assert "{" not in normalized.host_id
+    assert "{" not in normalized.problem
+    assert normalized.host_name == "SRV-TEST-01"
+    assert "[Test Webhook Zabbix]" in normalized.problem
+    assert normalized.metric == "system.cpu.util"
+    assert normalized.value == 50.0
+

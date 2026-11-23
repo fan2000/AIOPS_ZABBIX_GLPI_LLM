@@ -34,3 +34,8 @@ async def test_full_langgraph_workflow_cpu():
     assert len(report["hypotheses"]) >= 1
     assert report["confidence"]["level"] in ["insufficient_evidence", "low", "moderate", "high"]
     assert final_state["validation_passed"] is True
+
+    # Vérification que le 7ème agent (feedback_agent) a bien été exécuté dans le graphe (BUG-14)
+    assert "kb_proposal" in final_state
+    assert "title" in final_state["kb_proposal"]
+    assert "content" in final_state["kb_proposal"]

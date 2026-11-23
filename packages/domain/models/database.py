@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -47,14 +48,45 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    full_name: Mapped[Optional[str]] = mapped_column(String(150))
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("roles.id"), nullable=False)
     glpi_user_id: Mapped[Optional[str]] = mapped_column(String(50))
+    allowed_entities: Mapped[List[str]] = mapped_column(JSONB, default=lambda: ["0"])
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    mfa_secret: Mapped[Optional[str]] = mapped_column(String(255))
+    mfa_recovery_codes: Mapped[List[str]] = mapped_column(JSONB, default=list)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
 
     role: Mapped[Role] = relationship(back_populates="users")
     audit_logs: Mapped[List["AuditLog"]] = relationship(back_populates="user")
+    sessions: Mapped[List["UserSession"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class UserSession(Base):
+    """Sessions d'authentification actives et rotation sécurisée des Refresh Tokens."""
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    refresh_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    user_agent: Mapped[Optional[str]] = mapped_column(String(255))
+    ip_address: Mapped[Optional[str]] = mapped_column(String(45))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+
+    user: Mapped[User] = relationship(back_populates="sessions")
 
 
 class Integration(Base):
@@ -177,6 +209,9 @@ class KnowledgeChunk(Base):
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
     entity_id: Mapped[str] = mapped_column(String(50), default="0", index=True)
     metadata_fields: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
+    embedding_model: Mapped[str] = mapped_column(String(100), default="nomic-embed-text")
+    embedding_version: Mapped[int] = mapped_column(Integer, default=1)
+    is_fallback_embedding: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
 
     # Embedding vector (dim 768)
@@ -207,12 +242,19 @@ class AIAnalysisRun(Base):
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     incident_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("incidents.id"), nullable=False, index=True)
     model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String(30), default="deterministic")
     execution_status: Mapped[str] = mapped_column(String(30), default="completed")
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     hypotheses: Mapped[List[Dict[str, Any]]] = mapped_column(JSONB, default=list)
     checks: Mapped[List[str]] = mapped_column(JSONB, default=list)
     confidence_level: Mapped[str] = mapped_column(String(50), nullable=False)
     confidence_explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_telemetry: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
+    validation_passed: Mapped[bool] = mapped_column(Boolean, default=True)
+    blocked_actions_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
 
     incident: Mapped[Incident] = relationship(back_populates="analysis_runs")
@@ -272,6 +314,11 @@ class ActionApproval(Base):
     runbook_identifier: Mapped[str] = mapped_column(String(100), nullable=False)
     parameters: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(String(30), default="pending_approval")  # pending_approval, approved, rejected
+    thread_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    checkpoint_id: Mapped[Optional[str]] = mapped_column(String(128))
+    risk_level: Mapped[str] = mapped_column(String(20), default="MEDIUM")
+    action_summary: Mapped[Optional[str]] = mapped_column(Text)
+    execution_id: Mapped[Optional[uuid.UUID]] = mapped_column(PG_UUID(as_uuid=True))
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     decided_by_user: Mapped[Optional[str]] = mapped_column(String(100))
@@ -311,6 +358,24 @@ class IncidentFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
 
 
+class KnowledgeProposal(Base):
+    """Proposition d'article de base de connaissances générée par le Feedback Agent et validée par l'équipe."""
+    __tablename__ = "knowledge_proposals"
+
+    id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    incident_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("incidents.id"), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[str] = mapped_column(String(120), default="AIOps - Retours d'expérience")
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(50), default="0", index=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending_review", index=True)
+    created_by: Mapped[str] = mapped_column(String(100), default="feedback-agent")
+    reviewed_by: Mapped[Optional[str]] = mapped_column(String(100))
+    glpi_kb_id: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
@@ -324,3 +389,118 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), index=True)
 
     user: Mapped[Optional[User]] = relationship(back_populates="audit_logs")
+
+
+class LangGraphCheckpoint(Base):
+    """Persistance PostgreSQL des checkpoints LangGraph (threads HITL durables)."""
+    __tablename__ = "langgraph_checkpoints"
+
+    thread_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    checkpoint_ns: Mapped[str] = mapped_column(String(128), primary_key=True, default="")
+    checkpoint_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    parent_checkpoint_id: Mapped[Optional[str]] = mapped_column(String(128))
+    checkpoint_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    checkpoint_blob: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    metadata_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    metadata_blob: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+
+
+class LangGraphCheckpointWrite(Base):
+    """Persistance des écritures intermédiaires d'un checkpoint LangGraph."""
+    __tablename__ = "langgraph_checkpoint_writes"
+
+    thread_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    checkpoint_ns: Mapped[str] = mapped_column(String(128), primary_key=True, default="")
+    checkpoint_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    idx: Mapped[int] = mapped_column(Integer, primary_key=True)
+    channel: Mapped[str] = mapped_column(String(128), nullable=False)
+    value_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    value_blob: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    task_path: Mapped[str] = mapped_column(String(255), default="")
+
+
+class AIEvalRun(Base):
+    """Exécution du harness d'évaluation continue IA (pass@k, pass^k, RAG Recall/MRR, release gate)."""
+    __tablename__ = "ai_eval_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dataset_version: Mapped[str] = mapped_column(String(32), default="1.0.0", nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String(32), default="fast_deterministic", nullable=False)
+    model_name: Mapped[str] = mapped_column(String(120), default="deterministic")
+    triggered_by: Mapped[str] = mapped_column(String(100), default="system")
+    k_trials: Mapped[int] = mapped_column(Integer, default=1)
+    total_cases: Mapped[int] = mapped_column(Integer, default=0)
+    passed_cases: Mapped[int] = mapped_column(Integer, default=0)
+    overall_score: Mapped[float] = mapped_column(Float, default=0.0)
+    pass_at_k: Mapped[float] = mapped_column(Float, default=0.0)
+    pass_pow_k: Mapped[float] = mapped_column(Float, default=0.0)
+    diagnosis_accuracy: Mapped[float] = mapped_column(Float, default=0.0)
+    rag_recall_at_k: Mapped[float] = mapped_column(Float, default=0.0)
+    rag_mrr: Mapped[float] = mapped_column(Float, default=0.0)
+    hitl_safety_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    security_guardrail_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    p95_latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    gate_passed: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    regression_detected: Mapped[bool] = mapped_column(Boolean, default=False)
+    delta_vs_baseline: Mapped[Optional[float]] = mapped_column(Float)
+    gate_reasons: Mapped[List[str]] = mapped_column(JSONB, default=list)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), index=True)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+
+    case_results: Mapped[List["AIEvalCaseResult"]] = relationship(
+        back_populates="eval_run",
+        cascade="all, delete-orphan",
+    )
+
+
+class AIEvalCaseResult(Base):
+    """Résultat détaillé d'un scénario d'évaluation dans un run du Eval Harness."""
+    __tablename__ = "ai_eval_case_results"
+
+    id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    eval_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ai_eval_runs.id"), nullable=False, index=True)
+    case_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    case_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    score: Mapped[float] = mapped_column(Float, default=0.0)
+    trials_passed: Mapped[int] = mapped_column(Integer, default=0)
+    trials_total: Mapped[int] = mapped_column(Integer, default=1)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_used: Mapped[int] = mapped_column(Integer, default=0)
+    rag_recall_at_k: Mapped[Optional[float]] = mapped_column(Float)
+    rag_mrr: Mapped[Optional[float]] = mapped_column(Float)
+    checks: Mapped[List[Dict[str, Any]]] = mapped_column(JSONB, default=list)
+    actual_summary: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+
+    eval_run: Mapped[AIEvalRun] = relationship(back_populates="case_results")
+
+
+class KnowledgeEmbeddingDLQ(Base):
+    """File de reprise (Dead-Letter Queue) des documents dont les embeddings production ont échoué."""
+    __tablename__ = "knowledge_embedding_dlq"
+
+    id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    entity_id: Mapped[str] = mapped_column(String(50), default="0", index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    raw_content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="pending_retry", index=True)  # pending_retry, resolved, exhausted
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=5)
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())

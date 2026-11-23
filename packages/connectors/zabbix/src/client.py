@@ -1,5 +1,6 @@
 """Client asynchrone JSON-RPC pour l'API Zabbix 6.4 / 7.0."""
 
+import json
 import os
 from typing import Any, Dict, List, Optional
 import httpx
@@ -25,25 +26,34 @@ class ZabbixClient:
         """Exécute un appel JSON-RPC 2.0 avec en-têtes et authentification."""
         self._request_id += 1
         headers = {"Content-Type": "application/json-rpc"}
-        if self.auth_token:
-            headers["Authorization"] = f"Bearer {self.auth_token}"
 
-        payload = {
+        payload: Dict[str, Any] = {
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
             "id": self._request_id,
         }
-        if self.auth_token and "Authorization" not in headers:
+
+        # Pour les méthodes nécessitant une session Zabbix
+        if self.auth_token and method not in ("apiinfo.version", "user.login"):
+            headers["Authorization"] = f"Bearer {self.auth_token}"
             payload["auth"] = self.auth_token
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(self.api_url, json=payload, headers=headers)
             response.raise_for_status()
-            data = response.json()
+            try:
+                data = response.json()
+            except (json.JSONDecodeError, ValueError) as err:
+                raise RuntimeError(f"Réponse Zabbix invalide (non-JSON) : {response.text[:200]}") from err
+
             if "error" in data:
                 raise RuntimeError(f"Erreur API Zabbix: {data['error'].get('message')} - {data['error'].get('data')}")
             return data.get("result")
+
+    async def get_api_version(self) -> str:
+        """Retourne la version de l'API Zabbix (ex: 7.0.0) sans nécessiter d'authentification préalable."""
+        return str(await self._call("apiinfo.version", {}))
 
     async def login(self) -> str:
         """Authentification par nom d'utilisateur/mot de passe (Zabbix < 5.4/6.x/7.x)."""

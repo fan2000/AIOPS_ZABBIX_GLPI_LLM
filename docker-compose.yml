@@ -254,7 +254,8 @@ services:
       - "10050:10050"
     environment:
       - ZBX_HOSTNAME=Zabbix server
-      - ZBX_SERVER_HOST=0.0.0.0/0
+      - ZBX_SERVER_HOST=zabbix-server
+      - ZBX_PASSIVESERVERS=0.0.0.0/0
     depends_on:
       - zabbix-server
     networks:

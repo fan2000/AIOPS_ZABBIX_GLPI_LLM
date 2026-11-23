@@ -71,7 +71,7 @@ class RemediationRunner:
         runbook: RunbookDefinition,
         request: RunbookExecutionRequest,
     ) -> RunbookExecutionResult:
-        """Exécute un runbook validé de manière contrôlée."""
+        """Exécute un runbook validé de manière contrôlée avec gestion sécurisée des processus (CWE-775)."""
         self.validate_parameters(runbook, request.parameters)
 
         exec_id = uuid4()
@@ -117,6 +117,7 @@ class RemediationRunner:
         else:
             cmd_args = ["ansible-playbook", command_str]
 
+        process = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd_args,
@@ -142,6 +143,14 @@ class RemediationRunner:
                 post_check_verified=exit_code == 0,
             )
         except asyncio.TimeoutError:
+            # Neutralisation immédiate du processus orphelin en cas de timeout (CWE-775 / CWE-404)
+            if process is not None:
+                try:
+                    process.kill()
+                    await process.wait()
+                except Exception:
+                    pass
+
             return RunbookExecutionResult(
                 execution_id=exec_id,
                 runbook_id=runbook.id,
@@ -153,6 +162,12 @@ class RemediationRunner:
                 duration_seconds=float(runbook.timeout_seconds),
             )
         except Exception as e:
+            if process is not None:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+
             return RunbookExecutionResult(
                 execution_id=exec_id,
                 runbook_id=runbook.id,

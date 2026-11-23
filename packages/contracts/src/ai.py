@@ -46,6 +46,7 @@ class KnowledgeSourceCitation(BaseModel):
     source_type: Literal["glpi_kb", "resolved_ticket", "runbook_doc", "wiki"]
     relevance_score: float = Field(..., ge=0.0, le=1.0)
     snippet: str = Field(..., description="Extrait textuel justifiant la citation")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Métadonnées contextuelles filtrables")
 
 
 class ConfidenceDetail(BaseModel):

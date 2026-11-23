@@ -55,6 +55,15 @@ groups:
           summary: "Tempête d'alertes Zabbix détectée"
           description: "Plus de 10 événements bruts par seconde sont reçus via les webhooks Zabbix."
 
+      - alert: AIOpsAIEvalRegression
+        expr: aiops_eval_regression_detected == 1 or aiops_eval_latest_score{dimension="security_guardrail"} < 1
+        for: 1m
+        labels:
+          severity: high
+        annotations:
+          summary: "Régression qualité ou sécurité IA détectée (Eval Harness)"
+          description: "Le score d'évaluation continue IA a chuté sous le seuil minimal ou un guardrail de sécurité a échoué."
+
   - name: aiops_recording_rules
     rules:
       - record: job:aiops_events:rate1m

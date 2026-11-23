@@ -1,20 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { 
-  CheckCircle2, 
-  Code2, 
-  Cpu, 
-  Lock, 
-  Play, 
-  RefreshCw, 
-  Server, 
-  ShieldAlert, 
-  ShieldCheck, 
-  Terminal, 
-  Timer, 
-  UserCheck 
+import Link from "next/link";
+import {
+  CheckCircle2,
+  Code2,
+  Cpu,
+  Lock,
+  PauseCircle,
+  Play,
+  RefreshCw,
+  Server,
+  ShieldAlert,
+  ShieldCheck,
+  Terminal,
+  Timer,
+  UserCheck,
+  XCircle,
 } from "lucide-react";
+import { apiFetch } from "@/lib/api";
 
 interface RunbookItem {
   id: string;
@@ -27,25 +31,84 @@ interface RunbookItem {
   parameter_schema: any;
 }
 
+interface PendingApprovalItem {
+  id: string;
+  incident_id: string;
+  incident_number?: string;
+  incident_title?: string;
+  primary_asset_name?: string;
+  entity_id?: string;
+  runbook_identifier: string;
+  parameters: Record<string, any>;
+  status: string;
+  thread_id?: string | null;
+  checkpoint_id?: string | null;
+  risk_level?: string;
+  action_summary?: string;
+  requested_at?: string | null;
+}
+
 export default function AutomationPage() {
   const [runbooks, setRunbooks] = useState<RunbookItem[]>([]);
+  const [approvals, setApprovals] = useState<PendingApprovalItem[]>([]);
+  const [comments, setComments] = useState<Record<string, string>>({});
+  const [decidingId, setDecidingId] = useState<string | null>(null);
+  const [decisionMessage, setDecisionMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const fetchRunbooks = async () => {
-      try {
-        const res = await fetch("http://localhost:8005/api/v1/actions/runbooks");
-        if (res.ok) {
-          setRunbooks(await res.json());
-        }
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
+  const loadAutomationData = async () => {
+    try {
+      const [rbRes, appRes] = await Promise.all([
+        apiFetch("/api/v1/actions/runbooks"),
+        apiFetch("/api/v1/actions/approvals?status=pending_approval"),
+      ]);
+      if (rbRes.ok) {
+        setRunbooks(await rbRes.json());
       }
-    };
-    fetchRunbooks();
+      if (appRes.ok) {
+        setApprovals(await appRes.json());
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAutomationData();
+    const interval = setInterval(loadAutomationData, 5000);
+    return () => clearInterval(interval);
   }, []);
+
+  const handleDecision = async (approvalId: string, approved: boolean) => {
+    setDecidingId(approvalId);
+    setDecisionMessage(null);
+    try {
+      const res = await apiFetch(`/api/v1/actions/approvals/${approvalId}/decide`, {
+        method: "POST",
+        body: JSON.stringify({
+          approved,
+          comment: comments[approvalId] || "",
+        }),
+      });
+      if (res.ok) {
+        setDecisionMessage(
+          approved
+            ? "Action approuvée, exécutée en sandbox et graphe LangGraph repris."
+            : "Action rejetée et graphe LangGraph clôturé."
+        );
+        await loadAutomationData();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setDecisionMessage(err.detail || `Décision refusée (HTTP ${res.status}) — authentification opérateur/admin requise.`);
+      }
+    } catch {
+      setDecisionMessage("Erreur réseau lors de la soumission de la décision HITL.");
+    } finally {
+      setDecidingId(null);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -68,10 +131,126 @@ export default function AutomationPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/25">
+            <PauseCircle className="w-4 h-4 text-amber-400" />
+            <span>{approvals.length} HITL En Attente</span>
+          </span>
           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
             <span>Zéro Shell Libre</span>
           </span>
+        </div>
+      </div>
+
+      {/* File d'Approbation Human-in-the-Loop LangGraph */}
+      <div className="bezel-shell">
+        <div className="bezel-core p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/[0.06]">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-300">
+                <UserCheck className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white tracking-tight">
+                  File d&apos;Approbation Human-in-the-Loop LangGraph ({approvals.length})
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Workflows suspendus sur checkpoint PostgreSQL avant exécution Niveau 3 (MEDIUM / HIGH)
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={loadAutomationData}
+              className="btn-tactile inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-slate-200"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Actualiser</span>
+            </button>
+          </div>
+
+          {decisionMessage && (
+            <div className="p-3 rounded-xl bg-cyan-500/10 border border-cyan-500/25 text-xs text-cyan-200">
+              {decisionMessage}
+            </div>
+          )}
+
+          {approvals.length === 0 ? (
+            <div className="py-6 text-center text-xs text-slate-400">
+              Aucune remédiation LangGraph en attente d&apos;approbation humaine.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {approvals.map((app) => (
+                <div
+                  key={app.id}
+                  className="p-4 rounded-xl bg-obsidian-950/90 border border-amber-500/30 space-y-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Link
+                        href={`/incidents/${app.incident_id}`}
+                        className="font-mono text-xs font-bold text-cyan-300 hover:text-cyan-200 underline underline-offset-2"
+                      >
+                        {app.incident_number || app.incident_id.slice(0, 8)}
+                      </Link>
+                      <span className="text-xs font-semibold text-white">
+                        {app.incident_title || "Incident AIOps"}
+                      </span>
+                      {app.primary_asset_name && (
+                        <span className="text-[11px] font-mono text-slate-400">
+                          • {app.primary_asset_name}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[10px] uppercase px-2 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30">
+                        {app.risk_level || "MEDIUM"}
+                      </span>
+                      <span className="font-mono text-xs text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/25">
+                        {app.runbook_identifier}
+                      </span>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-slate-300">{app.action_summary || app.runbook_identifier}</p>
+
+                  {app.parameters && Object.keys(app.parameters).length > 0 && (
+                    <pre className="p-2 rounded bg-black/60 border border-white/[0.06] font-mono text-[11px] text-cyan-200 overflow-x-auto">
+                      {JSON.stringify(app.parameters, null, 2)}
+                    </pre>
+                  )}
+
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    <input
+                      type="text"
+                      value={comments[app.id] || ""}
+                      onChange={(e) => setComments((prev) => ({ ...prev, [app.id]: e.target.value }))}
+                      placeholder="Commentaire opérateur / motif décision..."
+                      className="flex-1 bg-obsidian-900 border border-white/[0.12] rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-cyan-500/50"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleDecision(app.id, true)}
+                        disabled={decidingId === app.id}
+                        className="btn-tactile inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>{decidingId === app.id ? "Reprise..." : "Approuver"}</span>
+                      </button>
+                      <button
+                        onClick={() => handleDecision(app.id, false)}
+                        disabled={decidingId === app.id}
+                        className="btn-tactile inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-rose-200 bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 disabled:opacity-50"
+                      >
+                        <XCircle className="w-3.5 h-3.5" />
+                        <span>Rejeter</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

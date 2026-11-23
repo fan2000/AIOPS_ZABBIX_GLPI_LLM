@@ -57,6 +57,32 @@ class CorrelationEngine:
             if matched_rec:
                 return matched_rec, "RECOVERY_TRIGGER_MATCH", 1.0
 
+        # Règle 3: Corrélation topologique multi-sites (tempête réseau / perte routeur cœur / proxy site)
+        infra_keywords = ("router", "gateway", "firewall", "core-sw", "wan", "bgp", "vpn", "ups", "proxy", "unreachable")
+        is_network_symptom = (
+            any(kw in event.problem.lower() for kw in infra_keywords)
+            or (event.metric and event.metric.lower() in ("icmpping", "icmppingloss", "agent.ping", "net.if.in", "net.if.status"))
+            or event.tags.get("topology_role") in ("core_router", "site_gateway", "wan_link")
+        )
+        if is_network_symptom and event.site_code:
+            site_stmt = (
+                select(Incident)
+                .where(
+                    Incident.entity_id == event.entity_id,
+                    Incident.status.in_(["OPEN", "INVESTIGATING", "CORRELATED", "WAITING_APPROVAL"]),
+                    Incident.opened_at >= cutoff_time,
+                )
+                .order_by(desc(Incident.opened_at))
+                .limit(5)
+            )
+            site_incidents = (await session.execute(site_stmt)).scalars().all()
+            for candidate in site_incidents:
+                cand_meta = candidate.incident_metadata or {}
+                cand_site = cand_meta.get("site_code")
+                cand_title_lower = candidate.title.lower()
+                if cand_site == event.site_code and any(kw in cand_title_lower for kw in infra_keywords):
+                    return candidate, "SITE_TOPOLOGY_CORRELATION", 0.92
+
         return None
 
     async def link_event_to_incident(

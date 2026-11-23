@@ -113,17 +113,80 @@ export default function ArchitectureFlowPage() {
   const [nodes, setNodes] = useState<PipelineNode[]>(DEFAULT_NODES);
   const [selectedNode, setSelectedNode] = useState<PipelineNode>(DEFAULT_NODES[3]);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [sites, setSites] = useState<any[]>([
+    {
+      site_code: "PAR-DC1",
+      name: "Datacenter Principal Paris (Core)",
+      role: "PRIMARY_DC",
+      network_zones: ["CORE", "DMZ", "MANAGEMENT"],
+      zabbix_proxy: "zbx-proxy-par-dc1",
+      glpi_entity_id: "1",
+      ha_mode: "Active-Active Cluster",
+      wan_redundancy: "Dual MPLS + SD-WAN IPsec",
+      status: "ONLINE",
+      active_incidents: 0,
+    },
+    {
+      site_code: "LYN-DC2",
+      name: "Datacenter Secours Lyon (PRA / DR)",
+      role: "DR_FAILOVER_DC",
+      network_zones: ["CORE", "DMZ", "DR_REPLICA"],
+      zabbix_proxy: "zbx-proxy-lyn-dc2",
+      glpi_entity_id: "2",
+      ha_mode: "Active-Standby / Streaming Replication",
+      wan_redundancy: "Dual Fiber + BGP Multi-Homing",
+      status: "ONLINE",
+      active_incidents: 0,
+    },
+    {
+      site_code: "MAR-EDGE-01",
+      name: "Site Régional & Industriel Marseille (Edge / OT)",
+      role: "REGIONAL_BRANCH_OT",
+      network_zones: ["EDGE", "OT"],
+      zabbix_proxy: "zbx-proxy-mar-edge-01",
+      glpi_entity_id: "3",
+      ha_mode: "Local Proxy Buffer (Offline Resilient 72h)",
+      wan_redundancy: "SD-WAN + 5G LTE Failover",
+      status: "ONLINE",
+      active_incidents: 0,
+    },
+    {
+      site_code: "CLD-EU-WEST",
+      name: "Zone Cloud Hybride Europe (Kubernetes VPC)",
+      role: "HYBRID_CLOUD_VPC",
+      network_zones: ["CLOUD", "DMZ"],
+      zabbix_proxy: "zbx-proxy-cld-eu-west",
+      glpi_entity_id: "4",
+      ha_mode: "Multi-AZ Auto-Scaling Group (3 AZs)",
+      wan_redundancy: "Direct Connect + VPN BGP",
+      status: "ONLINE",
+      active_incidents: 0,
+    },
+  ]);
+  const [readinessScore, setReadinessScore] = useState<number>(100);
 
   const fetchFlowStatus = async () => {
     try {
       setIsRefreshing(true);
-      const res = await fetch("http://localhost:8005/api/v1/system/flow-status");
-      if (res.ok) {
-        const data = await res.json();
+      const [resFlow, resTopo, resProd] = await Promise.all([
+        fetch("http://localhost:8005/api/v1/system/flow-status").catch(() => null),
+        fetch("http://localhost:8005/api/v1/system/multi-site-topology").catch(() => null),
+        fetch("http://localhost:8005/api/v1/system/production-readiness").catch(() => null),
+      ]);
+      if (resFlow && resFlow.ok) {
+        const data = await resFlow.json();
         if (data.nodes && data.nodes.length > 0) {
           setNodes(data.nodes);
           setSelectedNode((prev) => data.nodes.find((n: PipelineNode) => n.id === prev.id) || data.nodes[0]);
         }
+      }
+      if (resTopo && resTopo.ok) {
+        const topoData = await resTopo.json();
+        if (topoData.sites) setSites(topoData.sites);
+      }
+      if (resProd && resProd.ok) {
+        const prodData = await resProd.json();
+        if (prodData.overall_score) setReadinessScore(prodData.overall_score);
       }
     } catch (e) {
       console.error("Erreur flux d'architecture:", e);
@@ -360,6 +423,87 @@ export default function ArchitectureFlowPage() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      </div>
+
+      {/* Fédération Multi-Sites, Réseaux Complexes & Haute Disponibilité (PROD) */}
+      <div className="bezel-shell">
+        <div className="bezel-core space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-obsidian-750/70">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                <ShieldCheck className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">
+                  Fédération Multi-Sites, Topologies Réseaux Complexes & Haute Disponibilité (HA / DR)
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Supervision distribuée par Proxies Zabbix, cloisonnement Multi-Entités GLPI, corrélation anti-tempête WAN et continuité RPO=0 / RTO&lt;15s
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="px-3 py-1 rounded-full text-xs font-mono font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                PROD READINESS : {readinessScore}/100
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {sites.map((site) => (
+              <div
+                key={site.site_code}
+                className="p-4 rounded-xl bg-obsidian-950/90 border border-obsidian-750/70 hover:border-cyan-500/40 transition-all space-y-3 flex flex-col justify-between"
+              >
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-xs font-bold text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
+                      {site.site_code}
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                      {site.status}
+                    </span>
+                  </div>
+                  <h4 className="text-sm font-bold text-white leading-snug">{site.name}</h4>
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {(site.network_zones || []).map((z: string) => (
+                      <span
+                        key={z}
+                        className="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase bg-white/[0.05] text-slate-300 border border-white/[0.08]"
+                      >
+                        Zone {z}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-obsidian-800 space-y-1.5 text-[11px] font-mono text-slate-400">
+                  <div className="flex justify-between">
+                    <span className="font-sans">Proxy Zabbix :</span>
+                    <span className="text-slate-200">{site.zabbix_proxy}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-sans">Entité GLPI :</span>
+                    <span className="text-cyan-400 font-bold">Entité #{site.glpi_entity_id}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-sans">Mode HA :</span>
+                    <span className="text-emerald-400 truncate max-w-[140px]" title={site.ha_mode}>
+                      {site.ha_mode}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-sans">Liens WAN :</span>
+                    <span className="text-slate-300 truncate max-w-[140px]" title={site.wan_redundancy}>
+                      {site.wan_redundancy}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>

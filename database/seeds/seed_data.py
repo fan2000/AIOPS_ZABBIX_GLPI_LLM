@@ -130,9 +130,13 @@ async def seed_database() -> None:
                 email="admin@aiops.local",
                 hashed_password=pwd_context.hash("admin_aiops_pass"),
                 role_id=role_map["admin"].id,
+                allowed_entities=["*"],
                 is_active=True,
             )
             session.add(new_admin)
+        else:
+            if not admin_user.allowed_entities or admin_user.allowed_entities == ["0"]:
+                admin_user.allowed_entities = ["*"]
 
         # 3. Runbooks
         for rb_data in INITIAL_RUNBOOKS:

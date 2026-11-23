@@ -56,3 +56,7 @@ class NormalizedIncidentEvent(BaseModel):
     ip_address: Optional[str] = Field(None, description="Adresse IP")
     tags: Dict[str, str] = Field(default_factory=dict)
     idempotency_key: str = Field(..., description="Hash unique sha256 pour déduplication")
+    site_code: str = Field(default="PAR-DC1", description="Code du site géographique ou datacenter")
+    network_zone: str = Field(default="CORE", description="Zone réseau (CORE, DMZ, EDGE, CLOUD, OT)")
+    zabbix_proxy: Optional[str] = Field(default=None, description="Proxy Zabbix local du site distant")
+    entity_id: str = Field(default="0", description="Entité GLPI associée au site")

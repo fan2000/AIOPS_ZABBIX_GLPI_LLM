@@ -159,21 +159,53 @@ class GlpiClient:
         res = await self._request("POST", f"Ticket/{solution.items_id}/ITILSolution", json_data=payload)
         return int(res.get("id", 0))
 
-    async def get_knowledge_items(self, limit: int = 50) -> List[GlpiKnowledgeItemRead]:
-        """Récupère les articles de la base de connaissances GLPI pour vectorisation."""
-        params = {"range": f"0-{limit}"}
-        items = await self._request("GET", "KnowbaseItem", params=params)
-        results = []
-        for it in items:
-            results.append(
-                GlpiKnowledgeItemRead(
-                    id=int(it["id"]),
-                    name=it.get("name", "Sans titre"),
-                    answer=it.get("answer", ""),
-                    entities_id=int(it.get("entities_id", 0)),
-                    is_faq=bool(it.get("is_faq", False)),
+    async def create_knowledge_item(self, name: str, answer: str, entities_id: int = 0) -> Optional[int]:
+        """Crée un nouvel article dans la base de connaissances GLPI."""
+        payload = {
+            "input": {
+                "name": name,
+                "answer": answer,
+                "entities_id": entities_id,
+                "is_faq": 1,
+            }
+        }
+        res = await self._request("POST", "KnowbaseItem", json_data=payload)
+        if isinstance(res, dict) and res.get("id") is not None:
+            return int(res["id"])
+        return None
+
+    async def get_knowledge_items(self, limit: int = 100, max_items: int = 1000) -> List[GlpiKnowledgeItemRead]:
+        """Récupère les articles de la base de connaissances GLPI avec pagination complète."""
+        results: List[GlpiKnowledgeItemRead] = []
+        offset = 0
+        page_size = max(1, min(100, limit))
+
+        while offset < max_items:
+            params = {"range": f"{offset}-{offset + page_size - 1}"}
+            try:
+                items = await self._request("GET", "KnowbaseItem", params=params)
+            except httpx.HTTPStatusError as err:
+                if err.response.status_code in (400, 416):  # Fin de pagination GLPI
+                    break
+                raise
+            if not isinstance(items, list) or not items:
+                break
+
+            for it in items:
+                results.append(
+                    GlpiKnowledgeItemRead(
+                        id=int(it["id"]),
+                        name=it.get("name", "Sans titre"),
+                        answer=it.get("answer", "") or "",
+                        entities_id=int(it.get("entities_id", 0)),
+                        is_faq=bool(it.get("is_faq", False)),
+                    )
                 )
-            )
+
+            if len(items) < page_size:
+                break
+            offset += page_size
+
         return results
 
 

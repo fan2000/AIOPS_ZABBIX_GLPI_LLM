@@ -1,7 +1,12 @@
 """Tests unitaires pour la sécurité, tokens JWT et signatures HMAC."""
 
 from datetime import timedelta
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 import pytest
+from packages.domain.models.database import User
 from packages.security.src.hmac_auth import get_webhook_secret, verify_hmac_signature
 from packages.security.src.jwt import (
     create_access_token,
@@ -10,7 +15,7 @@ from packages.security.src.jwt import (
     verify_password,
 )
 from packages.security.src.rate_limiter import InMemoryRateLimiter
-from apps.api.src.dependencies.auth import AuthenticatedUserContext
+from apps.api.src.dependencies.auth import AuthenticatedUserContext, get_current_user
 
 
 def test_password_hashing():
@@ -37,6 +42,17 @@ def test_rate_limiter_in_memory():
     assert limiter.is_allowed(client_ip) is True
     # 4ème requête dépasse la limite
     assert limiter.is_allowed(client_ip) is False
+
+
+def test_rate_limiter_cleanup_anti_leak_cwe_770():
+    """Vérifie la purge des clés obsolètes pour prévenir les fuites mémoire (CWE-770)."""
+    limiter = InMemoryRateLimiter(max_requests=5, window_seconds=1)
+    for i in range(600):
+        limiter._history[f"stale_client_{i}"] = [0.0]  # Vieux timestamps
+    limiter._last_cleanup = 0.0  # Force le nettoyage
+    assert limiter.is_allowed("active_client") is True
+    # Les anciennes clés doivent avoir été purgées
+    assert len(limiter._history) < 500
 
 
 def test_rbac_role_hierarchy():
@@ -68,3 +84,24 @@ def test_production_hmac_secret_guard_cwe_798(monkeypatch):
     with pytest.raises(RuntimeError, match="CWE-798"):
         get_webhook_secret()
 
+
+@pytest.mark.asyncio
+async def test_deactivated_user_token_rejected_cwe_613():
+    """Vérifie le rejet HTTP 403 d'un token valide pour un compte désactivé (CWE-613)."""
+    mock_session = AsyncMock()
+    mock_deactivated_user = MagicMock(spec=User)
+    mock_deactivated_user.username = "fired_admin"
+    mock_deactivated_user.is_active = False
+
+    exec_res = MagicMock()
+    exec_res.scalar_one_or_none.return_value = mock_deactivated_user
+    mock_session.execute.return_value = exec_res
+
+    token = create_access_token({"sub": "fired_admin", "role": "admin"})
+    auth_cred = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user(auth=auth_cred, session=mock_session)
+
+    assert exc_info.value.status_code == 403
+    assert "désactivé" in exc_info.value.detail

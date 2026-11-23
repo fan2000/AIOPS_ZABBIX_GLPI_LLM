@@ -1,22 +1,24 @@
-"""Nœud Agent Résolution : Sélection des runbooks et formulation des recommandations."""
+"""Nœud Agent Résolution : Sélection des runbooks du catalogue et niveaux de risque."""
 
+import time
 from typing import Any, Dict, List
 from packages.agents.src.state import IncidentAgentState
+from packages.observability.src.metrics import record_agent_execution
 
 
 async def resolution_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
     """Sélectionne les procédures approuvées du catalogue en fonction du diagnostic."""
+    t0 = time.perf_counter()
     primary_event = state.get("primary_event", {})
     problem = primary_event.get("problem", "").lower()
-    asset_info = state.get("asset_info", {})
+    asset_info = state.get("asset_info", {}) or {}
     os_name = (asset_info.get("operatingsystem") or "").lower()
 
     recommended_actions: List[Dict[str, Any]] = []
 
-    # 1. Cas CPU élevé
-    if "cpu" in problem:
+    if "cpu" in problem or "ram" in problem or "swap" in problem or "memory" in problem:
         recommended_actions.append({
-            "action": "Collecter la liste des processus les plus consommateurs (Lecture seule)",
+            "action": "Collecter la liste des processus les plus consommateurs CPU/RAM (Lecture seule)",
             "runbook_id": "rb-collect-top-processes",
             "parameters": {},
             "requires_approval": False,
@@ -24,8 +26,7 @@ async def resolution_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
             "risk_level": "LOW",
         })
 
-    # 2. Cas Service arrêté
-    elif "service" in problem or "spooler" in problem or "nginx" in problem:
+    elif "service" in problem or "spooler" in problem or "nginx" in problem or "stopped" in problem:
         service_target = "nginx" if "linux" in os_name else "Spooler"
         if "linux" in os_name:
             recommended_actions.append({
@@ -46,8 +47,7 @@ async def resolution_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
                 "risk_level": "MEDIUM",
             })
 
-    # 3. Cas Disque plein
-    elif "disk" in problem or "espace" in problem or "fs" in problem:
+    elif "disk" in problem or "espace" in problem or "fs" in problem or "var/log" in problem:
         recommended_actions.append({
             "action": "Purge préventive des logs archivés de plus de 15 jours",
             "runbook_id": "rb-disk-cleanup-logs",
@@ -67,4 +67,12 @@ async def resolution_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
             "risk_level": "LOW",
         })
 
-    return {"recommended_actions": recommended_actions}
+    dur_ms = int((time.perf_counter() - t0) * 1000)
+    record_agent_execution("resolution_agent", "success")
+
+    return {
+        "recommended_actions": recommended_actions,
+        "agent_telemetry": {
+            "Resolution Agent": {"duration_ms": dur_ms, "status": "ok", "actions_count": len(recommended_actions)}
+        },
+    }

@@ -1,6 +1,7 @@
 """Sécurité, hachage et tokens JWT pour la plateforme AI IT Operations."""
 
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 from jose import JWTError, jwt
@@ -21,6 +22,8 @@ if ENVIRONMENT == "production":
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 480  # 8 heures de session
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+MFA_CHALLENGE_EXPIRE_MINUTES = 5
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -48,3 +51,28 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
         return payload
     except JWTError:
         return None
+
+
+def create_mfa_challenge_token(user_id: str, username: str) -> str:
+    """Émet un jeton éphémère (5 min) autorisant uniquement la validation du second facteur MFA."""
+    return create_access_token(
+        data={
+            "sub": username,
+            "user_id": user_id,
+            "token_type": "mfa_challenge",
+        },
+        expires_delta=timedelta(minutes=MFA_CHALLENGE_EXPIRE_MINUTES),
+    )
+
+
+def decode_mfa_challenge_token(token: str) -> Optional[Dict[str, Any]]:
+    """Décode un jeton de challenge MFA et vérifie son type explicite."""
+    payload = decode_access_token(token)
+    if not payload or payload.get("token_type") != "mfa_challenge":
+        return None
+    return payload
+
+
+def generate_refresh_token() -> str:
+    """Génère un Refresh Token opaque cryptographiquement aléatoire."""
+    return f"aiops_rt_{secrets.token_urlsafe(48)}"

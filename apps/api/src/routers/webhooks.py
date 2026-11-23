@@ -2,7 +2,7 @@
 
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from packages.connectors.redis_streams import redis_streams
 from packages.connectors.zabbix.src.normalizer import normalize_zabbix_payload
@@ -11,19 +11,33 @@ from packages.security.src.hmac_auth import verify_bearer_token, verify_hmac_sig
 
 router = APIRouter(prefix="/api/v1/webhooks", tags=["Webhooks"])
 LAB_MODE = os.getenv("LAB_MODE_ENABLED", "false").lower() == "true"
+MAX_WEBHOOK_BODY_BYTES = 1_048_576  # 1 Mo max (CWE-770)
 
 
 @router.post("/zabbix", status_code=status.HTTP_202_ACCEPTED)
 async def receive_zabbix_webhook(
     request: Request,
     response: Response,
-    x_zabbix_signature: str = Header(None),
-    authorization: str = Header(None),
+    x_zabbix_signature: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
     """Point d'entrée HTTPS pour les alertes Zabbix. Valide et met en file Redis Streams."""
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_WEBHOOK_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Corps de requête trop volumineux (max: {MAX_WEBHOOK_BODY_BYTES} octets)",
+        )
+
     body_bytes = await request.body()
     if not body_bytes:
         raise HTTPException(status_code=400, detail="Corps de requête vide")
+
+    if len(body_bytes) > MAX_WEBHOOK_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Corps de requête trop volumineux (max: {MAX_WEBHOOK_BODY_BYTES} octets)",
+        )
 
     # Vérification d'authenticité (désactivable en mode lab pour faciliter les tests)
     if not LAB_MODE:
@@ -34,8 +48,11 @@ async def receive_zabbix_webhook(
 
     try:
         raw_json = json.loads(body_bytes.decode("utf-8"))
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="JSON malformé")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="JSON malformé ou encodage non UTF-8")
+
+    if not isinstance(raw_json, dict):
+        raise HTTPException(status_code=400, detail="Le payload webhook doit être un objet JSON valide")
 
     # Normalisation et calcul de clé d'idempotence
     normalized = normalize_zabbix_payload(raw_json)
