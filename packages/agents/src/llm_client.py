@@ -1,5 +1,6 @@
 """Client LLM hybride orienté production (Ollama + OpenAI-compatible, cache Redis+LRU, disjoncteur, FinOps)."""
 
+import asyncio
 from collections import OrderedDict
 from datetime import datetime, timezone
 import hashlib
@@ -12,6 +13,8 @@ import httpx
 
 from packages.agents.src.guardrails import estimate_cost_usd, estimate_tokens
 from packages.connectors.redis_streams import redis_streams
+
+_ORIG_ASYNC_CLIENT = httpx.AsyncClient
 
 
 def _strip_json_fences(raw: str) -> str:
@@ -67,6 +70,25 @@ class LLMClient:
         self._local_quota_day: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         self._local_quota_tokens: int = 0
 
+        # Pool HTTP réutilisable + cache sonde santé (TTL 10s)
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._pool_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._health_cache: Optional[Dict[str, Any]] = None
+        self._health_cache_ts: float = 0.0
+        self._health_cache_ttl: float = float(os.getenv("LLM_HEALTH_CACHE_TTL", "10.0"))
+
+    async def _get_pooled_client(self) -> Optional[httpx.AsyncClient]:
+        """Retourne un client HTTP poolé lié à la boucle asyncio courante (None si httpx mocké)."""
+        if httpx.AsyncClient is not _ORIG_ASYNC_CLIENT:
+            return None
+        loop = asyncio.get_running_loop()
+        if self._http_client is None or self._http_client.is_closed or self._pool_loop is not loop:
+            self._http_client = httpx.AsyncClient(
+                limits=httpx.Limits(max_connections=32, max_keepalive_connections=16)
+            )
+            self._pool_loop = loop
+        return self._http_client
+
     def _cache_key(self, model: str, system_prompt: str, user_prompt: str) -> str:
         return hashlib.sha256(f"{self.provider}:{model}:{system_prompt}::{user_prompt}".encode("utf-8")).hexdigest()
 
@@ -92,10 +114,12 @@ class LLMClient:
     def _record_failure(self) -> None:
         self._failure_count += 1
         self._last_fail_ts = time.monotonic()
+        self._health_cache = None
 
     def _record_success(self) -> None:
         self._failure_count = 0
         self._last_fail_ts = 0.0
+        self._health_cache = None
 
     def _cache_put(self, key: str, value: Dict[str, Any]) -> None:
         if key in self._cache:
@@ -223,87 +247,42 @@ class LLMClient:
                 "error_reason": "circuit_breaker_open",
             }
 
-        # 4. Inférence LLM réelle
+        # 4. Inférence LLM réelle (pool HTTP réutilisable en prod, AsyncClient direct si patché en test)
         timeout_cfg = httpx.Timeout(self.timeout, connect=self.connect_timeout)
         error_reason = "llm_unavailable"
         try:
-            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
-                if self.provider == "openai_compatible":
-                    headers = {"Content-Type": "application/json"}
-                    if self.api_key:
-                        headers["Authorization"] = f"Bearer {self.api_key}"
-                    payload = {
-                        "model": active_model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "response_format": {"type": "json_object"},
-                        "temperature": 0.1,
-                        "max_tokens": self.max_tokens,
-                    }
-                    res = await client.post(f"{self.openai_base_url}/chat/completions", json=payload, headers=headers)
-                    if res.status_code == 200:
-                        body = res.json()
-                        content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
-                        parsed = json.loads(_strip_json_fences(content))
-                        usage = body.get("usage", {})
-                        p_tok = int(usage.get("prompt_tokens") or estimate_tokens(system_prompt + user_prompt))
-                        c_tok = int(usage.get("completion_tokens") or estimate_tokens(content))
-                    else:
-                        self._record_failure()
-                        error_reason = f"http_{res.status_code}"
-                        parsed = None
-                        p_tok, c_tok = 0, 0
-                else:
-                    # Ollama API /api/chat
-                    payload = {
-                        "model": active_model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "format": "json",
-                        "stream": False,
-                        "options": {
-                            "temperature": 0.1,
-                            "num_predict": self.max_tokens,
-                        },
-                    }
-                    res = await client.post(f"{self.base_url}/api/chat", json=payload)
-                    if res.status_code == 200:
-                        body = res.json()
-                        content = body.get("message", {}).get("content", "")
-                        parsed = json.loads(_strip_json_fences(content))
-                        p_tok = int(body.get("prompt_eval_count") or estimate_tokens(system_prompt + user_prompt))
-                        c_tok = int(body.get("eval_count") or estimate_tokens(content))
-                    else:
-                        self._record_failure()
-                        error_reason = f"http_{res.status_code}"
-                        parsed = None
-                        p_tok, c_tok = 0, 0
+            pooled = await self._get_pooled_client()
+            if pooled is not None:
+                res, parsed, p_tok, c_tok, error_reason = await self._call_llm_endpoint(
+                    pooled, active_model, system_prompt, user_prompt, timeout_cfg
+                )
+            else:
+                async with httpx.AsyncClient(timeout=timeout_cfg) as client:
+                    res, parsed, p_tok, c_tok, error_reason = await self._call_llm_endpoint(
+                        client, active_model, system_prompt, user_prompt, timeout_cfg
+                    )
 
-                if isinstance(parsed, dict):
-                    self._record_success()
-                    cost_usd = estimate_cost_usd(self.provider, active_model, p_tok, c_tok)
-                    await self._increment_quota(p_tok + c_tok)
-                    self._cache_put(ckey, parsed)
-                    try:
-                        r_client = await redis_streams.get_client()
-                        if r_client is not None:
-                            await r_client.setex(redis_key, 300, json.dumps(parsed))
-                    except Exception:
-                        pass
-                    return {
-                        "data": parsed,
-                        "mode": "llm_live",
-                        "model": active_model,
-                        "prompt_tokens": p_tok,
-                        "completion_tokens": c_tok,
-                        "estimated_cost_usd": cost_usd,
-                        "latency_ms": int((time.perf_counter() - t0) * 1000),
-                        "error_reason": None,
-                    }
+            if isinstance(parsed, dict):
+                self._record_success()
+                cost_usd = estimate_cost_usd(self.provider, active_model, p_tok, c_tok)
+                await self._increment_quota(p_tok + c_tok)
+                self._cache_put(ckey, parsed)
+                try:
+                    r_client = await redis_streams.get_client()
+                    if r_client is not None:
+                        await r_client.setex(redis_key, 300, json.dumps(parsed))
+                except Exception:
+                    pass
+                return {
+                    "data": parsed,
+                    "mode": "llm_live",
+                    "model": active_model,
+                    "prompt_tokens": p_tok,
+                    "completion_tokens": c_tok,
+                    "estimated_cost_usd": cost_usd,
+                    "latency_ms": int((time.perf_counter() - t0) * 1000),
+                    "error_reason": None,
+                }
         except httpx.TimeoutException:
             self._record_failure()
             error_reason = "timeout"
@@ -325,6 +304,66 @@ class LLMClient:
             "error_reason": error_reason,
         }
 
+    async def _call_llm_endpoint(
+        self,
+        client: httpx.AsyncClient,
+        active_model: str,
+        system_prompt: str,
+        user_prompt: str,
+        timeout_cfg: httpx.Timeout,
+    ) -> tuple[Optional[httpx.Response], Optional[Dict[str, Any]], int, int, str]:
+        if self.provider == "openai_compatible":
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            payload = {
+                "model": active_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.1,
+                "max_tokens": self.max_tokens,
+            }
+            res = await client.post(
+                f"{self.openai_base_url}/chat/completions", json=payload, headers=headers, timeout=timeout_cfg
+            )
+            if res.status_code == 200:
+                body = res.json()
+                content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+                parsed = json.loads(_strip_json_fences(content))
+                usage = body.get("usage", {})
+                p_tok = int(usage.get("prompt_tokens") or estimate_tokens(system_prompt + user_prompt))
+                c_tok = int(usage.get("completion_tokens") or estimate_tokens(content))
+                return res, parsed, p_tok, c_tok, ""
+            self._record_failure()
+            return res, None, 0, 0, f"http_{res.status_code}"
+
+        payload = {
+            "model": active_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "format": "json",
+            "stream": False,
+            "options": {
+                "temperature": 0.1,
+                "num_predict": self.max_tokens,
+            },
+        }
+        res = await client.post(f"{self.base_url}/api/chat", json=payload, timeout=timeout_cfg)
+        if res.status_code == 200:
+            body = res.json()
+            content = body.get("message", {}).get("content", "")
+            parsed = json.loads(_strip_json_fences(content))
+            p_tok = int(body.get("prompt_eval_count") or estimate_tokens(system_prompt + user_prompt))
+            c_tok = int(body.get("eval_count") or estimate_tokens(content))
+            return res, parsed, p_tok, c_tok, ""
+        self._record_failure()
+        return res, None, 0, 0, f"http_{res.status_code}"
+
     async def generate_json(
         self,
         system_prompt: str,
@@ -335,8 +374,8 @@ class LLMClient:
         res = await self.generate_structured(system_prompt, user_prompt, severity=severity)
         return res.get("data")
 
-    async def check_health(self) -> Dict[str, Any]:
-        """Vérifie la disponibilité live du serveur d'inférence sans bloquer le thread événementiel."""
+    async def check_health(self, force: bool = False) -> Dict[str, Any]:
+        """Vérifie la disponibilité live du serveur d'inférence avec cache TTL 10s non bloquant."""
         circuit = self.get_circuit_state()
         if self.provider == "disabled":
             return {
@@ -355,28 +394,48 @@ class LLMClient:
                 "available_models": [self.model_name],
             }
 
+        now_mono = time.monotonic()
+        if (
+            not force
+            and self._health_cache is not None
+            and (now_mono - self._health_cache_ts) < self._health_cache_ttl
+            and httpx.AsyncClient is _ORIG_ASYNC_CLIENT
+        ):
+            return {**self._health_cache, "circuit_state": circuit}
+
+        t_cfg = httpx.Timeout(1.0, connect=0.4)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(1.0, connect=0.4)) as client:
-                r = await client.get(f"{self.base_url}/api/tags")
-                if r.status_code == 200:
-                    models = [m.get("name") for m in r.json().get("models", []) if isinstance(m, dict)]
-                    return {
-                        "online": True,
-                        "provider": self.provider,
-                        "model": self.model_name,
-                        "circuit_state": circuit,
-                        "available_models": models,
-                    }
+            pooled = await self._get_pooled_client()
+            if pooled is not None:
+                r = await pooled.get(f"{self.base_url}/api/tags", timeout=t_cfg)
+            else:
+                async with httpx.AsyncClient(timeout=t_cfg) as client:
+                    r = await client.get(f"{self.base_url}/api/tags")
+            if r.status_code == 200:
+                models = [m.get("name") for m in r.json().get("models", []) if isinstance(m, dict)]
+                out = {
+                    "online": True,
+                    "provider": self.provider,
+                    "model": self.model_name,
+                    "circuit_state": circuit,
+                    "available_models": models,
+                }
+                self._health_cache = out
+                self._health_cache_ts = now_mono
+                return out
         except Exception:
             pass
 
-        return {
+        out = {
             "online": False,
             "provider": self.provider,
             "model": self.model_name,
             "circuit_state": circuit,
             "available_models": [],
         }
+        self._health_cache = out
+        self._health_cache_ts = now_mono
+        return out
 
 
 llm_client = LLMClient()

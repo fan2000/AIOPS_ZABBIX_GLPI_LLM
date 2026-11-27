@@ -3,7 +3,7 @@
 import os
 import time
 from typing import Any, Dict, List
-from packages.agents.src.guardrails import sanitize_untrusted_text, wrap_untrusted_xml
+from packages.agents.src.guardrails import redact_sensitive_data, sanitize_untrusted_text, wrap_untrusted_xml
 from packages.agents.src.llm_client import llm_client
 from packages.agents.src.state import IncidentAgentState
 from packages.observability.src.metrics import (
@@ -55,6 +55,9 @@ async def diagnosis_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
     )
     execution_mode = "deterministic"
     model_used = llm_client.model_name
+    prev_prompt_tokens = int(state.get("prompt_tokens") or 0)
+    prev_completion_tokens = int(state.get("completion_tokens") or 0)
+    prev_cost_usd = float(state.get("estimated_cost_usd") or 0.0)
     prompt_tokens = 0
     completion_tokens = 0
     estimated_cost_usd = 0.0
@@ -75,11 +78,10 @@ async def diagnosis_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
             if citations
             else "Aucune source documentaire pertinente trouvée."
         )
-        safe_host = sanitize_untrusted_text(host_name, max_len=120)
-        safe_problem = sanitize_untrusted_text(problem, max_len=300)
+        safe_host = sanitize_untrusted_text(redact_sensitive_data(host_name), max_len=120)
         user_prompt = (
             f"Hôte: {safe_host} | Sévérité: {severity}\n"
-            f"Problème: {safe_problem}\n"
+            f"{wrap_untrusted_xml('incident_problem', problem, max_len=400)}\n"
             f"{wrap_untrusted_xml('observations', obs_text)}\n"
             f"{wrap_untrusted_xml('knowledge_sources', cit_text)}"
         )
@@ -92,7 +94,24 @@ async def diagnosis_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
         estimated_cost_usd = float(llm_res.get("estimated_cost_usd") or 0.0)
         execution_mode = str(llm_res.get("mode") or "deterministic_fallback")
 
-        if llm_output and isinstance(llm_output.get("hypotheses"), list) and llm_output["hypotheses"]:
+        raw_hyps = llm_output.get("hypotheses") if isinstance(llm_output, dict) else None
+        if isinstance(raw_hyps, list) and raw_hyps:
+            norm_hyps: List[Dict[str, Any]] = []
+            for h in raw_hyps:
+                if isinstance(h, dict):
+                    ev = h.get("evidence")
+                    ev_list = [str(e) for e in ev] if isinstance(ev, list) else ([str(ev)] if ev else [])
+                    norm_hyps.append({
+                        "description": str(h.get("description") or h.get("hypothesis") or "").strip(),
+                        "evidence": ev_list,
+                        "status": str(h.get("status") or "probable").lower(),
+                    })
+                elif isinstance(h, str) and h.strip():
+                    norm_hyps.append({"description": h.strip(), "evidence": [], "status": "probable"})
+
+            raw_checks = llm_output.get("checks") if isinstance(llm_output, dict) else None
+            norm_checks = [str(c) for c in raw_checks] if isinstance(raw_checks, list) else []
+
             conf_level = str(llm_output.get("confidence_level", "moderate")).lower()
             conf_expl = str(llm_output.get("confidence_explanation", "Diagnostic généré par inférence LLM structurée."))
             # Guardrail anti-hallucination strict : sans source RAG et sans signature connue -> insufficient_evidence
@@ -103,18 +122,21 @@ async def diagnosis_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
             dur_sec = time.perf_counter() - t0
             record_llm_inference("diagnosis_agent", model_used, dur_sec, prompt_tokens, completion_tokens)
             record_agent_execution("diagnosis_agent", "llm_success")
+            total_prompt_tokens = prev_prompt_tokens + prompt_tokens
+            total_completion_tokens = prev_completion_tokens + completion_tokens
+            total_cost_usd = round(prev_cost_usd + estimated_cost_usd, 6)
             return {
-                "hypotheses": llm_output.get("hypotheses", []),
-                "missing_info_checks": llm_output.get("checks", []),
+                "hypotheses": norm_hyps,
+                "missing_info_checks": norm_checks,
                 "confidence_detail": {
                     "level": conf_level,
                     "explanation": conf_expl,
                 },
                 "execution_mode": execution_mode,
                 "model_used": model_used,
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "estimated_cost_usd": estimated_cost_usd,
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+                "estimated_cost_usd": total_cost_usd,
                 "agent_telemetry": {
                     "Diagnosis Agent": {
                         "duration_ms": int(dur_sec * 1000),
@@ -208,9 +230,9 @@ async def diagnosis_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
         },
         "execution_mode": execution_mode,
         "model_used": model_used,
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "estimated_cost_usd": 0.0,
+        "prompt_tokens": prev_prompt_tokens,
+        "completion_tokens": prev_completion_tokens,
+        "estimated_cost_usd": prev_cost_usd,
         "agent_telemetry": {
             "Diagnosis Agent": {
                 "duration_ms": int(dur_sec * 1000),

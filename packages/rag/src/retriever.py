@@ -15,10 +15,13 @@ from packages.rag.src.embeddings import embeddings_service
 
 SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.20"))
 MAX_QUERY_LENGTH = 500
+_QUERY_TOKEN_RE = re.compile(r"[a-zA-Z0-9_À-ÿ]+")
+_SANITIZE_TOKEN_RE = re.compile(r"[^a-z0-9_à-ÿ]")
+_PY_KW_RE = re.compile(r"[a-zA-Z0-9_\-\.\/À-ÿ]+")
 
 
 def cosine_similarity(v1: Any, v2: Any) -> float:
-    """Calcule la similarité cosinus entre deux vecteurs numériques."""
+    """Calcule la similarité cosinus entre deux vecteurs numériques en une seule passe."""
     if v1 is None or v2 is None:
         return 0.0
     try:
@@ -28,21 +31,27 @@ def cosine_similarity(v1: Any, v2: Any) -> float:
         return 0.0
     if len1 == 0 or len1 != len2:
         return 0.0
-    dot = sum(float(a) * float(b) for a, b in zip(v1, v2))
-    norm1 = sum(float(a) * float(a) for a in v1) ** 0.5
-    norm2 = sum(float(b) * float(b) for b in v2) ** 0.5
-    if norm1 == 0.0 or norm2 == 0.0:
+    dot = 0.0
+    sq1 = 0.0
+    sq2 = 0.0
+    for a, b in zip(v1, v2):
+        fa = float(a)
+        fb = float(b)
+        dot += fa * fb
+        sq1 += fa * fa
+        sq2 += fb * fb
+    if sq1 == 0.0 or sq2 == 0.0:
         return 0.0
-    return dot / (norm1 * norm2)
+    return dot / ((sq1 * sq2) ** 0.5)
 
 
 def _clean_query_tokens(query: str) -> List[str]:
     """Extrait jusqu'à 12 jetons normalisés uniques pour construction sécurisée de tsquery."""
-    raw_tokens = re.findall(r"[a-zA-Z0-9_À-ÿ]+", query.lower())
+    raw_tokens = _QUERY_TOKEN_RE.findall(query.lower())
     clean_terms: List[str] = []
     seen = set()
     for tok in raw_tokens:
-        sanitized = re.sub(r"[^a-z0-9_à-ÿ]", "", tok)
+        sanitized = _SANITIZE_TOKEN_RE.sub("", tok)
         if len(sanitized) >= 2 and sanitized not in seen:
             seen.add(sanitized)
             clean_terms.append(sanitized)
@@ -475,7 +484,7 @@ class HybridRetriever:
         results = (await session.execute(stmt)).all()
         norm_filters = _normalize_metadata_filters(metadata_filters)
         scored_candidates: List[Dict[str, Any]] = []
-        keywords = [w.lower() for w in re.findall(r"[a-zA-Z0-9_\-\.\/À-ÿ]+", clean_query) if len(w) >= 2]
+        keywords = [w.lower() for w in _PY_KW_RE.findall(clean_query) if len(w) >= 2]
 
         for chunk, doc in results:
             if not _matches_metadata_filters(getattr(chunk, "metadata_fields", None), norm_filters):

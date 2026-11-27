@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.src.dependencies.auth import AuthenticatedUserContext, get_current_user
 from database.connection import get_db_session
 from packages.domain.models.database import AuditLog, Role, User, UserSession
-from packages.security.src.jwt import get_password_hash
+from packages.security.src.jwt import get_password_hash_async
 from packages.security.src.mfa import validate_password_strength
 
 router = APIRouter(prefix="/api/v1/users", tags=["Users & RBAC Administration"])
@@ -135,7 +135,7 @@ async def create_user_by_admin(
         username=clean_username,
         email=clean_email,
         full_name=(req.full_name or "").strip() or None,
-        hashed_password=get_password_hash(req.password),
+        hashed_password=await get_password_hash_async(req.password),
         role_id=role_obj.id,
         allowed_entities=entities,
         is_active=req.is_active,
@@ -284,7 +284,7 @@ async def reset_user_password(
     if pwd_err:
         raise HTTPException(status_code=400, detail=pwd_err)
 
-    user.hashed_password = get_password_hash(req.new_password)
+    user.hashed_password = await get_password_hash_async(req.new_password)
     await session.execute(
         update(UserSession)
         .where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))

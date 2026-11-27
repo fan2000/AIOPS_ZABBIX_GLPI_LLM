@@ -1,13 +1,16 @@
 """Client asynchrone JSON-RPC pour l'API Zabbix 6.4 / 7.0."""
 
+import asyncio
 import json
 import os
 from typing import Any, Dict, List, Optional
 import httpx
 
+_ORIG_ASYNC_CLIENT = httpx.AsyncClient
+
 
 class ZabbixClient:
-    """Client API Zabbix JSON-RPC 2.0 avec gestion automatique de session et retry."""
+    """Client API Zabbix JSON-RPC 2.0 avec pool HTTP réutilisable, session et retry."""
 
     def __init__(
         self,
@@ -21,6 +24,19 @@ class ZabbixClient:
         self.username = username or os.getenv("ZABBIX_USER", "Admin")
         self.password = password or os.getenv("ZABBIX_PASSWORD", "zabbix")
         self._request_id = 0
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._pool_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    async def _get_pooled_client(self) -> Optional[httpx.AsyncClient]:
+        if httpx.AsyncClient is not _ORIG_ASYNC_CLIENT:
+            return None
+        loop = asyncio.get_running_loop()
+        if self._http_client is None or self._http_client.is_closed or self._pool_loop is not loop:
+            self._http_client = httpx.AsyncClient(
+                limits=httpx.Limits(max_connections=24, max_keepalive_connections=12)
+            )
+            self._pool_loop = loop
+        return self._http_client
 
     async def _call(self, method: str, params: Dict[str, Any]) -> Any:
         """Exécute un appel JSON-RPC 2.0 avec en-têtes et authentification."""
@@ -39,17 +55,21 @@ class ZabbixClient:
             headers["Authorization"] = f"Bearer {self.auth_token}"
             payload["auth"] = self.auth_token
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(self.api_url, json=payload, headers=headers)
-            response.raise_for_status()
-            try:
-                data = response.json()
-            except (json.JSONDecodeError, ValueError) as err:
-                raise RuntimeError(f"Réponse Zabbix invalide (non-JSON) : {response.text[:200]}") from err
+        pooled = await self._get_pooled_client()
+        if pooled is not None:
+            response = await pooled.post(self.api_url, json=payload, headers=headers, timeout=10.0)
+        else:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(self.api_url, json=payload, headers=headers)
+        response.raise_for_status()
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, ValueError) as err:
+            raise RuntimeError(f"Réponse Zabbix invalide (non-JSON) : {response.text[:200]}") from err
 
-            if "error" in data:
-                raise RuntimeError(f"Erreur API Zabbix: {data['error'].get('message')} - {data['error'].get('data')}")
-            return data.get("result")
+        if "error" in data:
+            raise RuntimeError(f"Erreur API Zabbix: {data['error'].get('message')} - {data['error'].get('data')}")
+        return data.get("result")
 
     async def get_api_version(self) -> str:
         """Retourne la version de l'API Zabbix (ex: 7.0.0) sans nécessiter d'authentification préalable."""

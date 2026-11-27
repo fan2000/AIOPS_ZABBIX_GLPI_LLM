@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api";
 import { 
   Activity, 
   ArrowRight, 
@@ -169,9 +170,9 @@ export default function ArchitectureFlowPage() {
     try {
       setIsRefreshing(true);
       const [resFlow, resTopo, resProd] = await Promise.all([
-        fetch("http://localhost:8005/api/v1/system/flow-status").catch(() => null),
-        fetch("http://localhost:8005/api/v1/system/multi-site-topology").catch(() => null),
-        fetch("http://localhost:8005/api/v1/system/production-readiness").catch(() => null),
+        apiFetch("/api/v1/system/flow-status").catch(() => null),
+        apiFetch("/api/v1/system/multi-site-topology").catch(() => null),
+        apiFetch("/api/v1/system/production-readiness").catch(() => null),
       ]);
       if (resFlow && resFlow.ok) {
         const data = await resFlow.json();

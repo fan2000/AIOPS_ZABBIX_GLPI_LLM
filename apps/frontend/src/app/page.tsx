@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { apiFetch } from "@/lib/api";
 import { 
   Activity, 
   AlertOctagon, 
@@ -51,7 +52,7 @@ export default function DashboardPage() {
 
   const fetchIncidents = async () => {
     try {
-      const res = await fetch("http://localhost:8005/api/v1/incidents?limit=10");
+      const res = await apiFetch("/api/v1/incidents?limit=10");
       if (res.ok) {
         const data = await res.json();
         setIncidents(data);
@@ -79,7 +80,7 @@ export default function DashboardPage() {
     setInjectedScenario(scenarioId);
     setLastInjectedName(label);
     try {
-      await fetch(`http://localhost:8005/api/v1/lab/scenarios/${scenarioId}/inject`, {
+      await apiFetch(`/api/v1/lab/scenarios/${scenarioId}/inject`, {
         method: "POST",
       });
       setTimeout(fetchIncidents, 800);

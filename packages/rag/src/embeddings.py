@@ -13,6 +13,8 @@ import httpx
 from packages.connectors.redis_streams import redis_streams
 from packages.observability.src.metrics import record_rag_embedding
 
+_ORIG_ASYNC_CLIENT = httpx.AsyncClient
+
 
 class EmbeddingsService:
     """Générateur d'embeddings multi-providers (Ollama / TEI / OpenAI-compat) avec batching et disjoncteur."""
@@ -69,6 +71,19 @@ class EmbeddingsService:
         self._failure_threshold: int = 2
         self._last_fail_ts: float = 0.0
         self._circuit_cooldown_sec: float = float(os.getenv("EMBEDDING_CIRCUIT_COOLDOWN", "30.0"))
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._pool_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    async def _get_pooled_client(self) -> Optional[httpx.AsyncClient]:
+        if httpx.AsyncClient is not _ORIG_ASYNC_CLIENT:
+            return None
+        loop = asyncio.get_running_loop()
+        if self._http_client is None or self._http_client.is_closed or self._pool_loop is not loop:
+            self._http_client = httpx.AsyncClient(
+                limits=httpx.Limits(max_connections=32, max_keepalive_connections=16)
+            )
+            self._pool_loop = loop
+        return self._http_client
 
     def _is_circuit_open(self) -> bool:
         if self._failure_count < self._failure_threshold:
@@ -120,8 +135,10 @@ class EmbeddingsService:
         client: httpx.AsyncClient,
         texts: List[str],
         headers: Dict[str, str],
+        timeout_cfg: Optional[httpx.Timeout] = None,
     ) -> Optional[List[List[float]]]:
         sem = asyncio.Semaphore(4)
+        post_kwargs: Dict[str, Any] = {"timeout": timeout_cfg} if timeout_cfg is not None else {}
 
         async def _one(txt: str) -> Optional[List[float]]:
             async with sem:
@@ -129,6 +146,7 @@ class EmbeddingsService:
                     f"{self.base_url}/api/embeddings",
                     headers=headers,
                     json={"model": self.model_name, "prompt": txt},
+                    **post_kwargs,
                 )
                 if res.status_code != 200:
                     return None
@@ -142,48 +160,63 @@ class EmbeddingsService:
             return None
         return [v for v in results if v is not None]
 
+    async def _fetch_with_client(
+        self,
+        client: httpx.AsyncClient,
+        texts: List[str],
+        headers: Dict[str, str],
+        timeout_cfg: Optional[httpx.Timeout],
+    ) -> Optional[List[List[float]]]:
+        post_kwargs: Dict[str, Any] = {"timeout": timeout_cfg} if timeout_cfg is not None else {}
+        if self.provider == "tei":
+            res = await client.post(
+                f"{self.base_url}/embed",
+                headers=headers,
+                json={"inputs": texts, "truncate": True},
+                **post_kwargs,
+            )
+            if res.status_code == 200:
+                payload = res.json()
+                raw_vecs = payload.get("embeddings") if isinstance(payload, dict) else payload
+                return self._valid_vectors(raw_vecs, len(texts))
+            return None
+
+        if self.provider == "openai_compat":
+            res = await client.post(
+                f"{self.base_url}/v1/embeddings",
+                headers=headers,
+                json={"model": self.model_name, "input": texts},
+                **post_kwargs,
+            )
+            if res.status_code == 200:
+                data = res.json().get("data")
+                if isinstance(data, list) and len(data) == len(texts):
+                    ordered = sorted(data, key=lambda item: int(item.get("index", 0)))
+                    raw_vecs = [item.get("embedding") for item in ordered]
+                    return self._valid_vectors(raw_vecs, len(texts))
+            return None
+
+        # Par défaut : Ollama (/api/embed batch natif, repli /api/embeddings si 404)
+        res = await client.post(
+            f"{self.base_url}/api/embed",
+            headers=headers,
+            json={"model": self.model_name, "input": texts},
+            **post_kwargs,
+        )
+        if res.status_code == 200:
+            return self._valid_vectors(res.json().get("embeddings"), len(texts))
+        if res.status_code == 404:
+            return await self._fetch_ollama_legacy(client, texts, headers, timeout_cfg=timeout_cfg)
+        return None
+
     async def _fetch_provider_batch_once(self, texts: List[str]) -> Optional[List[List[float]]]:
         timeout_cfg = httpx.Timeout(self.timeout, connect=min(self.connect_timeout, self.timeout))
         headers = self._build_headers()
-
+        pooled = await self._get_pooled_client()
+        if pooled is not None:
+            return await self._fetch_with_client(pooled, texts, headers, timeout_cfg)
         async with httpx.AsyncClient(timeout=timeout_cfg) as client:
-            if self.provider == "tei":
-                res = await client.post(
-                    f"{self.base_url}/embed",
-                    headers=headers,
-                    json={"inputs": texts, "truncate": True},
-                )
-                if res.status_code == 200:
-                    payload = res.json()
-                    raw_vecs = payload.get("embeddings") if isinstance(payload, dict) else payload
-                    return self._valid_vectors(raw_vecs, len(texts))
-                return None
-
-            if self.provider == "openai_compat":
-                res = await client.post(
-                    f"{self.base_url}/v1/embeddings",
-                    headers=headers,
-                    json={"model": self.model_name, "input": texts},
-                )
-                if res.status_code == 200:
-                    data = res.json().get("data")
-                    if isinstance(data, list) and len(data) == len(texts):
-                        ordered = sorted(data, key=lambda item: int(item.get("index", 0)))
-                        raw_vecs = [item.get("embedding") for item in ordered]
-                        return self._valid_vectors(raw_vecs, len(texts))
-                return None
-
-            # Par défaut : Ollama (/api/embed batch natif, repli /api/embeddings si 404)
-            res = await client.post(
-                f"{self.base_url}/api/embed",
-                headers=headers,
-                json={"model": self.model_name, "input": texts},
-            )
-            if res.status_code == 200:
-                return self._valid_vectors(res.json().get("embeddings"), len(texts))
-            if res.status_code == 404:
-                return await self._fetch_ollama_legacy(client, texts, headers)
-            return None
+            return await self._fetch_with_client(client, texts, headers, None)
 
     async def _fetch_provider_batch(self, texts: List[str]) -> Optional[List[List[float]]]:
         """Appelle le fournisseur d'embeddings par lot avec tentatives limitées et disjoncteur."""
@@ -292,6 +325,7 @@ class EmbeddingsService:
                     except Exception:
                         r_client = None
 
+                    pipe = r_client.pipeline() if r_client is not None else None
                     for (h, (_, idxs)), vec in zip(chunk_items, fetched_vecs):
                         meta = {
                             "provider": self.provider,
@@ -302,14 +336,19 @@ class EmbeddingsService:
                         }
                         self._cache_put(h, vec, meta)
                         record_rag_embedding(self.provider, "real")
-                        if r_client is not None:
+                        if pipe is not None:
                             try:
                                 r_key = f"aiops:emb:{self.provider}:{self.model_name}:v{self.embedding_version}:{h}"
-                                await r_client.setex(r_key, 86400, json.dumps(vec))
+                                pipe.setex(r_key, 86400, json.dumps(vec))
                             except Exception:
                                 pass
                         for i in idxs:
                             resolved[i] = (vec, meta)
+                    if pipe is not None:
+                        try:
+                            await pipe.execute()
+                        except Exception:
+                            pass
                 else:
                     if strict_real:
                         record_rag_embedding(self.provider, "failed")

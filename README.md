@@ -7,9 +7,9 @@
 [![Next.js](https://img.shields.io/badge/Next.js-15.5-black.svg)](https://nextjs.org/)
 [![GLPI](https://img.shields.io/badge/GLPI-10.0%20Multi--Entit%C3%A9s-008080.svg)](https://glpi-project.org/)
 [![Zabbix](https://img.shields.io/badge/Zabbix-7.0%20LTS-red.svg)](https://www.zabbix.com/)
-[![Security](https://img.shields.io/badge/OWASP%202025-Zero--Trust%20Hardened-success.svg)]()
+[![Security](https://img.shields.io/badge/OWASP%202025-Zero--Trust%20Hardened-success.svg)](SECURITY.md)
 [![ProdReadiness](https://img.shields.io/badge/PROD%20Readiness-100%2F100%20Multi--Site%20HA-emerald.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-103%2F103%20Passed%20(100%25)-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-127%2F127%20Passed%20(100%25)-brightgreen.svg)]()
 [![EvalHarness](https://img.shields.io/badge/Eval%20Harness-14%2F14%20Release%20Gate%20PASSED-06b6d4.svg)]()
 
 ---
@@ -38,10 +38,12 @@
   - Moteur LLM hybride (`packages/agents/src/llm_client.py`) avec timeouts, sorties structurées Pydantic, cache Redis, guardrails **OWASP LLM01** / masquage des secrets (`packages/agents/src/guardrails.py`), persistance des citations RAG (`recommendation_sources`), boucle Feedback → KB et télémétrie FinOps `/api/v1/ai/status`.
 - 🧪 **Évaluation Continue Automatisée — Eval Harness (P2 #8)** :
   - **Golden Dataset v1.0.0** (`14` scénarios couvrant diagnostic, RAG `Recall@5`/`MRR`/`Faithfulness`, sûreté HITL et guardrails sécurité), métriques `pass@k` / `pass^k`, **Release Gate** bloquant CI/CD (`python -m packages.evals.src.cli`), persistance PostgreSQL (`ai_eval_runs`) et alerte Prometheus `AIOpsAIEvalRegression`.
-- 🛡️ **Remédiation Contrôlée Niveau 3 (Human-in-the-Loop) & Zero-Trust** :
-  - Catalogue de runbooks déclaratifs (PowerShell, SSH, Ansible) validés par schéma JSON.
-  - Blocage strict de toute injection de commandes OS (`CWE-78`), neutralisation active des sous-processus en dépassement de timeout (`CWE-775`), contrôle RBAC hiérarchique (`admin > operator > viewer`, `CWE-285/613`) et journalisation d'audit infalsifiable.
-- 🎨 **Interface NOC Obsidian "Double-Bezel" (Next.js 15)** : Console haute densité ergonomique avec pages dédiées `/incidents`, `/knowledge` (recherche filtrée OS/Catégorie/Site, inspection de chunks, DLQ, onglet **Qualité RAG, Gaps & GraphRAG**), `/ai-operations` (télémétrie FinOps LLM & Eval Harness), `/automation` (file HITL & runbooks) et `/architecture-flow`.
+- 🔐 **Système Complet IAM, MFA TOTP & Console d'Administration** : Authentification **Sign-In** (`/login`), **Sign-Up Viewer** (`/register`), **MFA TOTP RFC 6238** avec QR code & secrets chiffrés Fernet (`packages/security/src/mfa.py`), **Refresh Token Rotation** révocable (`UserSession`), profil utilisateur (`/profile`), console `/admin/users`, garde de navigation `AppShell`, et client centralisé `apiFetch()` anti-Open-Redirect (`CWE-601`).
+- 🛡️ **Remédiation Contrôlée Niveau 3 (Human-in-the-Loop) & Audit Sécurité (`SECURITY.md`)** :
+  - Catalogue de runbooks déclaratifs (PowerShell, SSH, Ansible) validés par schéma JSON avec extraction dynamique de service sécurisée (`^[A-Za-z0-9_.-]{1,64}$`).
+  - Blocage strict OS/paramètres (`CWE-78`), neutralisation processus timeout (`CWE-775`), RBAC hiérarchique (`admin > operator > viewer`, `CWE-285/613`), isolation anti-IDOR multi-entités avec `AuditLog` (`INCIDENT_IDOR_BLOCKED`, `RUNBOOK_IDOR_BLOCKED`), en-tête `Content-Security-Policy` et journalisation d'audit infalsifiable.
+- ⚡ **Optimisations Runtime & Performance** : Hachage mot de passe déporté hors event loop (`asyncio.to_thread`), pooling `httpx.AsyncClient` par boucle événementielle, cache santé LLM TTL 10s, sondes santé & enrichissement GLPI/Zabbix parallélisés (`asyncio.gather`), pipeline Redis `setex` batché et `cosine_similarity` en passe unique.
+- 🎨 **Interface NOC Obsidian "Double-Bezel" (Next.js 15)** : Console haute densité ergonomique avec pages `/login`, `/register`, `/profile`, `/admin/users`, `/incidents`, `/knowledge` (recherche filtrée, DLQ, **Qualité RAG, Gaps & GraphRAG**), `/ai-operations` (FinOps LLM & Eval Harness), `/automation` (HITL & runbooks) et `/architecture-flow`.
 
 ---
 
@@ -153,10 +155,13 @@ kubectl apply -f infrastructure/kubernetes/aiops-multi-site-ha.yaml
 
 ---
 
-## 🔌 Référence Rapide des APIs IA, HITL, Knowledge Center & Eval Harness
+## 🔌 Référence Rapide des APIs IAM, IA, HITL, Knowledge Center & Eval Harness
 
 | Domaine | Endpoint | Méthode | Rôle RBAC | Fonction |
 | :--- | :--- | :---: | :---: | :--- |
+| **IAM & Auth** | `/api/v1/auth/login`, `/register`, `/refresh`, `/logout`, `/me`, `/change-password` | `POST`/`GET` | Public / Connecté | Authentification JWT, inscription Viewer, rotation Refresh Token & profil |
+| **MFA TOTP** | `/api/v1/auth/mfa/setup`, `/enable`, `/disable`, `/verify-login` | `POST` | Connecté / Défi | Double authentification RFC 6238 (QR code + secrets chiffrés Fernet) |
+| **Admin RBAC** | `/api/v1/users`, `/users/{id}/role`, `/entities`, `/status`, `/unlock` | `GET`/`PATCH` | `admin` | Gestion des utilisateurs, entités GLPI autorisées et déverrouillage |
 | **Télémétrie IA** | `/api/v1/ai/status` | `GET` | Lecture | Statut LLM, cache Redis, tokens, latence et bascules déterministes |
 | **HITL LangGraph** | `/api/v1/actions/approvals` | `GET` | `viewer+` | Liste des actions en attente d'approbation isolées par entité |
 | **HITL LangGraph** | `/api/v1/actions/approvals/{id}/decide` | `POST` | `operator`/`admin` | Approuve/rejette et reprend le graphe depuis `PostgresAsyncCheckpointSaver` |
@@ -173,21 +178,23 @@ kubectl apply -f infrastructure/kubernetes/aiops-multi-site-ha.yaml
 
 ## 🔒 Sécurité Défensive & Audit Bug Bounty (OWASP Top 10:2025 / CWE / OWASP LLM)
 
-Les contrôles critiques suivants sont appliqués et couverts par des tests automatisés de non-régression :
+Les contrôles critiques suivants sont appliqués, documentés dans [`SECURITY.md`](SECURITY.md) et couverts par des tests automatisés de non-régression :
 
 | Réf. | CWE / OWASP | Protection Déployée | Fichier |
 | :--- | :--- | :--- | :--- |
-| **VULN-01** | **CWE-78** (Injection OS) | Rejet regex strict des métacaractères shell et validation alphanumérique bornée (128 car.) | `services/remediation_worker/src/runner.py` |
-| **VULN-02** | **CWE-306 / CWE-285** (RBAC) | Authentification JWT Bearer obligatoire et hiérarchie stricte `admin > operator > viewer` | `apps/api/src/routers/actions.py` |
+| **VULN-01** | **CWE-78** (Injection OS) | Rejet regex strict des métacaractères shell, validation service `^[A-Za-z0-9_.-]{1,64}$` & `ValueError -> HTTP 400` sur HITL override | `services/remediation_worker/src/runner.py`, `packages/agents/src/nodes/resolution_node.py`, `apps/api/src/routers/actions.py` |
+| **VULN-02** | **CWE-306 / CWE-285** (RBAC) | Authentification JWT Bearer obligatoire, hiérarchie `admin > operator > viewer`, auth sur `/incidents/{id}/analyze` & `/lab/*` (+ blocage prod) | `apps/api/src/routers/actions.py`, `incidents.py`, `lab.py` |
 | **VULN-03** | **CWE-798** (Secrets PROD) | Blocage `RuntimeError` au démarrage si secret par défaut ou `< 32` caractères en production | `packages/security/src/jwt.py` |
 | **VULN-05** | **CWE-79** (Stored XSS) | Assainissement systématique `html.escape()` des suivis privés envoyés vers GLPI | `services/incident_worker/src/worker.py` |
-| **VULN-06** | **CWE-942** (CORS) | Liste blanche explicite d'origines (`ALLOWED_ORIGINS`) et en-têtes de sécurité OWASP | `apps/api/src/main.py` |
+| **VULN-06** | **CWE-942 / CWE-693** (CORS / CSP) | Liste blanche `ALLOWED_ORIGINS` et injection `Content-Security-Policy` (`default-src 'none'; frame-ancestors 'none'`) | `apps/api/src/main.py` |
 | **VULN-10** | **CWE-755** (Audit Integrity) | Vérification d'existence de l'incident en base (`HTTP 404`) avant toute exécution de runbook | `apps/api/src/routers/actions.py` |
-| **VULN-11** | **CWE-613** (Révocation) | Vérification en direct `user.is_active` rejetant immédiatement (`HTTP 403`) tout compte désactivé | `apps/api/src/dependencies/auth.py` |
-| **VULN-12** | **CWE-307** (Brute-Force) | Rate-Limiter dédié `auth_limiter` (10 req/min par IP+utilisateur, `HTTP 429` + `Retry-After`) | `apps/api/src/routers/auth.py` |
-| **VULN-13** | **CWE-770** (DoS Payload) | Plafond strict de `1 Mo` (`HTTP 413`) sur les webhooks Zabbix et purge anti-fuite mémoire | `apps/api/src/routers/webhooks.py` |
+| **VULN-11** | **CWE-613** (Révocation) | Vérification en direct `user.is_active` rejetant immédiatement (`HTTP 403`) et Refresh Tokens révocables (`UserSession`) | `apps/api/src/dependencies/auth.py`, `apps/api/src/routers/auth.py` |
+| **VULN-12** | **CWE-307** (Brute-Force) | Rate-Limiter `auth_limiter` (`HTTP 429` + `Retry-After`) sur login et échecs HMAC/Bearer webhook Zabbix | `apps/api/src/routers/auth.py`, `webhooks.py` |
+| **VULN-13** | **CWE-770 / CWE-20** (Webhook) | Plafond strict `1 Mo` (`HTTP 413`), parsing sûr `Content-Length` (`HTTP 400`), tampons `deque` bornés (`RedisStreamsClient`) | `apps/api/src/routers/webhooks.py`, `packages/connectors/redis_streams.py` |
 | **VULN-18** | **CWE-775** (Process Leak) | Terminaison forcée `process.kill()` + `await process.wait()` sur expiration de timeout | `services/remediation_worker/src/runner.py` |
-| **AI-SEC-01** | **OWASP LLM01 / IDOR KB** | Balisage XML anti-prompt injection, masquage de secrets/tokens et isolation `allowed_entities` avec audit `KB_IDOR_BLOCKED` | `packages/agents/src/guardrails.py`, `apps/api/src/routers/knowledge.py` |
+| **SEC-IDOR** | **CWE-639** (Anti-IDOR) | Isolation stricte `allowed_entities` avec journalisation `AuditLog` (`INCIDENT_IDOR_BLOCKED`, `RUNBOOK_IDOR_BLOCKED`, `KB_IDOR_BLOCKED`) | `apps/api/src/routers/incidents.py`, `actions.py`, `knowledge.py` |
+| **FE-SEC** | **CWE-601** (Frontend Security) | `sanitizeNextPath()` anti-Open-Redirect (`/login`) et migration complète vers `apiFetch()` authentifié | `apps/frontend/src/app/login/page.tsx`, `lib/api.ts` |
+| **AI-SEC-01** | **OWASP LLM01 / LLM06** | Balisage XML (`<untrusted_incident_problem>`), redaction JWT/AWS/URL, blocage élargi des directives d'injection | `packages/agents/src/guardrails.py`, `nodes/diagnosis_node.py` |
 
 ---
 
@@ -226,9 +233,9 @@ Principales métriques IA / RAG / Eval exposées dans `packages/observability/sr
 
 ---
 
-## 🧪 Validation, Eval Harness & Suite Complète de Tests (103/103 Tests Passants — 100%)
+## 🧪 Validation, Eval Harness & Suite Complète de Tests (127/127 Tests Passants — 100%)
 
-Exécutez l'ensemble des tests unitaires, de sécurité OWASP/CWE, d'intégration, des 10 scénarios ITIL, RAG/GraphRAG, Eval Harness, connectivité système et résilience Multi-Sites HA :
+Exécutez l'ensemble des tests unitaires, IAM/MFA, de sécurité OWASP/CWE, d'intégration, des 10 scénarios ITIL, RAG/GraphRAG, Eval Harness, connectivité système et résilience Multi-Sites HA :
 
 ```powershell
 $env:PYTHONNOUSERSITE = "1"
@@ -241,9 +248,10 @@ uv run python -m packages.evals.src.cli --mode fast_deterministic --k 1
 cd apps/frontend; npx tsc --noEmit
 ```
 
-### Répartition des 103 Tests Automatisés (21 fichiers) :
-- **Tests d'intégration API & LangGraph (`32 tests`)** :
+### Répartition des 127 Tests Automatisés (25 fichiers) :
+- **Tests d'intégration API & LangGraph (`43 tests`)** :
   - `tests/integration/test_api_endpoints.py` *(9)* : Liveness, Webhook HMAC, Limite 1 Mo (`HTTP 413`), JSON malformé (`HTTP 400`), Catalogue Runbooks, Login JWT & `/me`, Rate-Limiting (`HTTP 429`), Incident inexistant (`HTTP 404`), Rejet RBAC Viewer (`HTTP 403`).
+  - `tests/integration/test_iam_auth_mfa_users_api.py` *(4)* : Inscription self-service Viewer & politique mot de passe, Setup/Enable/Challenge/Verify/Disable MFA TOTP, Rotation Refresh Token & changement mot de passe, Administration RBAC `/users/*`.
   - `tests/integration/test_langgraph_workflow.py` *(1)* : Exécution bout-en-bout LangGraph incluant `feedback_agent` et proposition KB.
   - `tests/integration/test_p0_ai_knowledge_loop.py` *(4)* : Isolation RAG cross-entity (`403`), auth stricte PROD (`401`), `/api/v1/ai/status`, boucle Feedback → KB.
   - `tests/integration/test_p0_module2_knowledge_api.py` *(3)* : Détail document + audit IDOR `KB_IDOR_BLOCKED`, DLQ & réindexation RBAC, métriques `/knowledge/stats`.
@@ -251,12 +259,15 @@ cd apps/frontend; npx tsc --noEmit
   - `tests/integration/test_p1_hitl_approvals_api.py` *(5)* : RBAC approbation HITL (`viewer`/`operator`), reprise approuvée/rejetée du checkpoint LangGraph, isolation multi-entités.
   - `tests/integration/test_p2_evals_api.py` *(4)* : `/api/v1/evals/dataset` (`14` cas), rejet `viewer` (`403`), déclenchement & persistance opérateur, historique runs.
   - `tests/integration/test_p2_rag_quality_api.py` *(3)* : Endpoints `/knowledge/quality`, `/gaps`, `/graph` et création 1-clic `/gaps/draft-proposal` (`403`/`201` + `AuditLog`).
+  - `tests/integration/test_security_audit_fixes_api.py` *(7)* : Anti-IDOR `/incidents/*/analyze`, `/incidents/*/feedback` & `/actions/execute`, auth/RBAC & garde prod `/lab/*`, `decide_approval` override `400`, webhook `Content-Length` invalide/négatif `400`, en-tête `Content-Security-Policy`.
 - **Scénarios & Système (`25 tests`)** :
   - `tests/scenarios/test_all_10_incident_scenarios.py` *(10)* : Disque plein, CPU saturé, RAM+Swap, Service arrêté, Hôte injoignable, Corrélation multi-alertes, Incident inconnu sans hallucination, Tolérance panne GLPI, Mode dégradé sans LLM, `RECOVERY`.
   - `tests/system/test_full_aiops_connectivity.py` *(9)* : Audit réseau 12 services, PostgreSQL+pgvector, Redis Streams, Webhook Zabbix, API, GLPI, RAG Hybride, Runbooks, routes Frontend.
   - `tests/system/test_production_multisite_ha.py` *(6)* : `/production-readiness` (`100/100`), topologie 4 sites, qualification site/zone, `SITE_TOPOLOGY_CORRELATION`, bascule HA Redis `RPO=0` & DLQ, manifestes Docker/K8s.
-- **Tests Unitaires & Sécurité (`46 tests`)** :
+- **Tests Unitaires & Sécurité (`59 tests`)** :
   - `tests/unit/test_security_rbac.py` *(7)* : Bcrypt/JWT, Rate-Limiter glissant & anti-fuite (`CWE-770`), RBAC, garde secret PROD (`CWE-798`), révocation compte (`CWE-613`).
+  - `tests/unit/test_mfa_totp_security.py` *(5)* : TOTP RFC 6238, chiffrement Fernet secret MFA, codes de récupération, politique mot de passe, rejet des jetons challenge MFA sur `get_current_user`.
+  - `tests/unit/test_security_agent_perf_audit.py` *(8)* : Redaction JWT/AWS/URL & marqueurs prompt injection élargis, masquage + cumul tokens `diagnosis_node`, normalisation LLM JSON `validation_node`, extraction service `resolution_node`, suivi `_use_memory_fallback` Checkpointer, deques bornées & `aclose()` Redis, hachage async `to_thread` & `cosine_similarity` passe unique.
   - `tests/unit/test_remediation_runner.py` *(5)* : Schéma runbook, rejet injection OS (`CWE-78`), simulation, `process.kill()` sur timeout (`CWE-775`).
   - `tests/unit/test_zabbix_normalization.py` *(5)* : Mapping sévérité, statut, idempotence SHA-256, assainissement macros Zabbix.
   - `tests/unit/test_rag_p0.py` *(4)*, `tests/unit/test_llm_guardrails_p0.py` *(3)* : RRF, filtrage entités, redaction secrets, anti-prompt injection, bascule déterministe.
@@ -273,17 +284,17 @@ cd apps/frontend; npx tsc --noEmit
 ```text
 AIOPS_ZABBIX_GLPI_LLM/
 ├── apps/
-│   ├── api/                        # API Gateway FastAPI (actions, auth, evals, health, incidents, knowledge, lab, webhooks)
-│   └── frontend/                   # Console Web Next.js 15 (ai-operations, architecture-flow, automation, incidents, knowledge)
+│   ├── api/                        # API Gateway FastAPI (actions, auth, evals, health, incidents, knowledge, lab, users, webhooks)
+│   └── frontend/                   # Console Web Next.js 15 (login, register, profile, admin/users, incidents, knowledge, ai-operations, automation, architecture-flow)
 ├── packages/
 │   ├── agents/                     # Graphe LangGraph (graph, state, checkpointer PG, guardrails LLM, llm_client, nodes/)
 │   ├── connectors/                 # Clients Zabbix JSON-RPC, GLPI REST, Redis Streams HA (Circuit Breaker & DLQ)
 │   ├── contracts/                  # Contrats Pydantic v2 (Events Multi-Sites, Incidents, AI/Citations, Runbooks)
-│   ├── domain/                     # Modèles SQLAlchemy 2.0 & pgvector (Incidents, KB/DLQ, HITL Checkpoints, Eval Runs)
+│   ├── domain/                     # Modèles SQLAlchemy 2.0 & pgvector (Incidents, KB/DLQ, HITL Checkpoints, Eval Runs, Users/Sessions)
 │   ├── evals/                      # Harness d'évaluation continue IA (dataset, graders, runner, persistence, cli)
 │   ├── observability/              # Exportateur de métriques Prometheus temps réel (IA, RAG, HITL, Eval)
 │   ├── rag/                        # RAG Production (chunker v2, embeddings multi-provider, retriever RRF, quality/gaps, graph_rag)
-│   └── security/                   # HMAC-SHA256, JWT, Rate-Limiter anti-fuite, RBAC
+│   └── security/                   # HMAC-SHA256, JWT, MFA TOTP Fernet, Rate-Limiter anti-fuite, RBAC
 ├── services/
 │   ├── incident_worker/            # Worker Redis Streams, Corrélation Topologique Multi-Sites & Isolation DLQ
 │   ├── knowledge_worker/           # Synchronisation KB GLPI, chunking sémantique v2, DLQ retry & réindexation
@@ -293,7 +304,8 @@ AIOPS_ZABBIX_GLPI_LLM/
 │   ├── docker/                     # Dockerfiles durcis non-root (USER aiops) avec sondes HEALTHCHECK
 │   ├── kubernetes/                 # Manifestes K8s Production Multi-Sites HA (HPA, PDB, AntiAffinity, NetworkPolicy)
 │   └── monitoring/                 # Règles Prometheus alerts.yml (dont AIOpsAIEvalRegression) & Provisioning Grafana
-├── tests/                          # 103 tests automatisés (Unitaires, Sécurité, Intégration, Scénarios, Système & HA)
+├── tests/                          # 127 tests automatisés (Unitaires, IAM/MFA, Sécurité, Intégration, Scénarios, Système & HA)
+├── SECURITY.md                     # Politique de sécurité, journal d'audit OWASP 2025/LLM & remédiations vérifiées
 ├── docker-compose.yml              # Stack conteneurisée complète (12 services)
 ├── docker-compose.prod.yml         # Surcharge Production Haute Disponibilité & Durcissement Sécurité
 ├── pyproject.toml                  # Configuration Python 3.12+, dépendances et pytest

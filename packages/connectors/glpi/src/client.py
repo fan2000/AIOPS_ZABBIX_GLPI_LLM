@@ -1,5 +1,6 @@
 """Client asynchrone pour l'API REST de GLPI (v9.5 et v10.0)."""
 
+import asyncio
 import os
 from typing import Any, Dict, List, Optional
 import httpx
@@ -11,9 +12,11 @@ from packages.contracts.src.glpi import (
     GlpiTicketCreate,
 )
 
+_ORIG_ASYNC_CLIENT = httpx.AsyncClient
+
 
 class GlpiClient:
-    """Client REST asynchrone pour GLPI avec gestion de session et entités."""
+    """Client REST asynchrone pour GLPI avec gestion de session, pool HTTP et entités."""
 
     def __init__(
         self,
@@ -31,6 +34,19 @@ class GlpiClient:
         self.password = password or os.getenv("GLPI_PASSWORD", "glpi")
         self.default_entity_id = int(os.getenv("GLPI_DEFAULT_ENTITY_ID", str(default_entity_id)))
         self._session_token: Optional[str] = None
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._pool_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    async def _get_pooled_client(self) -> Optional[httpx.AsyncClient]:
+        if httpx.AsyncClient is not _ORIG_ASYNC_CLIENT:
+            return None
+        loop = asyncio.get_running_loop()
+        if self._http_client is None or self._http_client.is_closed or self._pool_loop is not loop:
+            self._http_client = httpx.AsyncClient(
+                limits=httpx.Limits(max_connections=24, max_keepalive_connections=12)
+            )
+            self._pool_loop = loop
+        return self._http_client
 
     def _get_headers(self, with_session: bool = True) -> Dict[str, str]:
         headers = {
@@ -51,14 +67,20 @@ class GlpiClient:
         else:
             auth = (self.username, self.password)
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{self.api_url}/initSession", headers=headers, auth=auth)
+        pooled = await self._get_pooled_client()
+        if pooled is not None:
+            resp = await pooled.get(f"{self.api_url}/initSession", headers=headers, auth=auth, timeout=10.0)
             resp.raise_for_status()
             data = resp.json()
-            self._session_token = data.get("session_token")
-            if not self._session_token:
-                raise RuntimeError("GLPI initSession n'a pas retourné de session_token")
-            return self._session_token
+        else:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{self.api_url}/initSession", headers=headers, auth=auth)
+                resp.raise_for_status()
+                data = resp.json()
+        self._session_token = data.get("session_token")
+        if not self._session_token:
+            raise RuntimeError("GLPI initSession n'a pas retourné de session_token")
+        return self._session_token
 
     async def _request(
         self,
@@ -72,6 +94,19 @@ class GlpiClient:
             await self.init_session()
 
         url = f"{self.api_url}/{endpoint.lstrip('/')}"
+        pooled = await self._get_pooled_client()
+        if pooled is not None:
+            resp = await pooled.request(
+                method=method, url=url, headers=self._get_headers(), params=params, json=json_data, timeout=15.0
+            )
+            if resp.status_code == 401:
+                await self.init_session()
+                resp = await pooled.request(
+                    method=method, url=url, headers=self._get_headers(), params=params, json=json_data, timeout=15.0
+                )
+            resp.raise_for_status()
+            return resp.json() if resp.text else {}
+
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.request(
                 method=method,
@@ -81,7 +116,6 @@ class GlpiClient:
                 json=json_data,
             )
             if resp.status_code == 401:
-                # Session expirée, tentative de réinitialisation
                 await self.init_session()
                 resp = await client.request(
                     method=method,

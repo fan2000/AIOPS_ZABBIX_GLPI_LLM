@@ -24,8 +24,8 @@ from packages.security.src.jwt import (
     decode_access_token,
     decode_mfa_challenge_token,
     generate_refresh_token,
-    get_password_hash,
-    verify_password,
+    get_password_hash_async,
+    verify_password_async,
 )
 from packages.security.src.mfa import (
     build_otpauth_uri,
@@ -299,7 +299,7 @@ async def register(
         username=clean_username,
         email=clean_email,
         full_name=(req.full_name or "").strip() or None,
-        hashed_password=get_password_hash(req.password),
+        hashed_password=await get_password_hash_async(req.password),
         role_id=viewer_role.id,
         allowed_entities=["0"],
         is_active=True,
@@ -337,7 +337,7 @@ async def login(
     )
     user = (await session.execute(stmt)).scalar_one_or_none()
 
-    if not user or not verify_password(req.password, user.hashed_password):
+    if not user or not (await verify_password_async(req.password, user.hashed_password)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Nom d'utilisateur ou mot de passe incorrect",
@@ -582,14 +582,14 @@ async def change_password(
 ) -> Dict[str, Any]:
     """Modifie le mot de passe après vérification de l'ancien et révoque les sessions actives."""
     user = await _load_real_user(session, current_user)
-    if not verify_password(req.current_password, user.hashed_password):
+    if not (await verify_password_async(req.current_password, user.hashed_password)):
         raise HTTPException(status_code=401, detail="Mot de passe actuel incorrect.")
 
     pwd_err = validate_password_strength(req.new_password)
     if pwd_err:
         raise HTTPException(status_code=400, detail=pwd_err)
 
-    user.hashed_password = get_password_hash(req.new_password)
+    user.hashed_password = await get_password_hash_async(req.new_password)
     now = datetime.now(timezone.utc)
     await session.execute(
         update(UserSession)
@@ -751,7 +751,7 @@ async def disable_mfa(
 ) -> Dict[str, Any]:
     """Désactive la double authentification TOTP après vérification du mot de passe et du code MFA."""
     user = await _load_real_user(session, current_user)
-    if not verify_password(req.password, user.hashed_password):
+    if not (await verify_password_async(req.password, user.hashed_password)):
         raise HTTPException(status_code=401, detail="Mot de passe incorrect.")
 
     if user.mfa_enabled and not _verify_mfa_or_consume_recovery(user, req.code):

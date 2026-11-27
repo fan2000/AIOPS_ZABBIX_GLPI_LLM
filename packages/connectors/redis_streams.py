@@ -1,23 +1,31 @@
 """Gestionnaire de files Redis Streams avec fallback mémoire pour tests."""
 
+from collections import deque
 import json
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 import redis.asyncio as aioredis
 
 
 class RedisStreamsClient:
     """Client asynchrone pour la publication et consommation d'événements Redis Streams."""
 
-    def __init__(self, redis_url: Optional[str] = None):
+    def __init__(
+        self,
+        redis_url: Optional[str] = None,
+        max_fallback_len: int = 10000,
+        max_dlq_len: int = 2000,
+    ):
         self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6380/0")
         self.max_stream_len = int(os.getenv("REDIS_STREAM_MAXLEN", "100000"))
+        self.max_fallback_len = max(100, max_fallback_len)
+        self.max_dlq_len = max(50, max_dlq_len)
         self._redis: Optional[aioredis.Redis] = None
         self._last_fail_ts: float = 0.0
         self._circuit_cooldown_sec: float = 10.0
-        self._in_memory_streams: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
-        self._dlq_streams: Dict[str, List[Dict[str, Any]]] = {}
+        self._in_memory_streams: Dict[str, Deque[Tuple[str, Dict[str, Any]]]] = {}
+        self._dlq_streams: Dict[str, Deque[Dict[str, Any]]] = {}
         self._msg_counter = 0
 
     async def get_client(self) -> Optional[aioredis.Redis]:
@@ -26,6 +34,7 @@ class RedisStreamsClient:
             return self._redis
         if (time.monotonic() - self._last_fail_ts) < self._circuit_cooldown_sec and self._last_fail_ts > 0:
             return None
+        client: Optional[aioredis.Redis] = None
         try:
             client = aioredis.from_url(
                 self.redis_url,
@@ -39,6 +48,11 @@ class RedisStreamsClient:
             self._last_fail_ts = 0.0
             return self._redis
         except Exception:
+            if client is not None:
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
             # Disjoncteur ouvert temporairement : bascule instantanée sur le tampon mémoire HA
             self._last_fail_ts = time.monotonic()
             return None
@@ -59,11 +73,11 @@ class RedisStreamsClient:
                 # Bascule automatique en tampon mémoire si coupure réseau Redis transitoire (RPO = 0)
                 self._redis = None
 
-        # Fallback mémoire haute continuité
+        # Fallback mémoire borné (anti-OOM CWE-770)
         self._msg_counter += 1
         msg_id = f"{int(self._msg_counter * 1000)}-0"
         if stream_name not in self._in_memory_streams:
-            self._in_memory_streams[stream_name] = []
+            self._in_memory_streams[stream_name] = deque(maxlen=self.max_fallback_len)
         self._in_memory_streams[stream_name].append((msg_id, payload))
         return msg_id
 
@@ -82,7 +96,7 @@ class RedisStreamsClient:
             "payload": payload,
         }
         if dlq_name not in self._dlq_streams:
-            self._dlq_streams[dlq_name] = []
+            self._dlq_streams[dlq_name] = deque(maxlen=self.max_dlq_len)
         self._dlq_streams[dlq_name].append(dlq_entry)
         return await self.publish_event(dlq_name, dlq_entry)
 
@@ -136,9 +150,12 @@ class RedisStreamsClient:
                 return []
 
         # Consommation depuis la file mémoire
-        items = self._in_memory_streams.get(stream_name, [])
-        ret = items[:count]
-        self._in_memory_streams[stream_name] = items[count:]
+        items = self._in_memory_streams.get(stream_name)
+        if not items:
+            return []
+        ret: List[Tuple[str, Dict[str, Any]]] = []
+        for _ in range(min(count, len(items))):
+            ret.append(items.popleft())
         return ret
 
     async def ack_event(self, stream_name: str, group_name: str, message_id: str) -> None:

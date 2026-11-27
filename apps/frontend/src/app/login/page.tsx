@@ -14,10 +14,24 @@ import {
 } from "lucide-react";
 import { login, verifyMfaLogin } from "@/lib/api";
 
+function sanitizeNextPath(raw: string | null | undefined): string {
+  if (!raw) return "/";
+  const trimmed = raw.trim();
+  if (
+    !trimmed.startsWith("/") ||
+    trimmed.startsWith("//") ||
+    trimmed.includes("\\") ||
+    trimmed.includes("://") ||
+    /[\r\n\0]/.test(trimmed)
+  ) {
+    return "/";
+  }
+  return trimmed;
+}
+
 function LoginFormContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const nextPath = searchParams?.get("next") || "/";
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -38,7 +52,7 @@ function LoginFormContent() {
         setMfaTargetUser(outcome.user?.username || username.trim());
         setMfaCode("");
       } else {
-        router.replace(nextPath.startsWith("/") ? nextPath : "/");
+        router.replace(sanitizeNextPath(searchParams?.get("next")));
       }
     } catch (err: any) {
       setError(err?.message || "Identifiants invalides");
@@ -54,7 +68,7 @@ function LoginFormContent() {
     setError(null);
     try {
       await verifyMfaLogin(mfaChallengeToken, mfaCode);
-      router.replace(nextPath.startsWith("/") ? nextPath : "/");
+      router.replace(sanitizeNextPath(searchParams?.get("next")));
     } catch (err: any) {
       setError(err?.message || "Code MFA invalide ou expiré");
     } finally {

@@ -82,6 +82,13 @@ async def production_security_and_tracing_middleware(request: Request, call_next
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+    if request.url.path in ("/docs", "/redoc", "/openapi.json"):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+            "img-src 'self' data: https://fastapi.tiangolo.com; frame-ancestors 'none'"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
     return response
 
 # Inclusion des routeurs modulaires

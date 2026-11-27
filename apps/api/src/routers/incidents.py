@@ -10,7 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from apps.api.src.dependencies.auth import AuthenticatedUserContext, get_current_user
+from apps.api.src.dependencies.auth import (
+    AuthenticatedUserContext,
+    get_current_user,
+    get_knowledge_read_user,
+)
 from database.connection import get_db_session
 from packages.agents.src.graph import start_hitl_incident_analysis
 from packages.agents.src.state import IncidentAgentState
@@ -44,15 +48,24 @@ class IncidentFeedbackRequest(BaseModel):
     generate_kb_proposal: bool = True
 
 
+def _safe_entity_id(inc: Incident) -> str:
+    raw = getattr(inc, "entity_id", "0")
+    return str(raw) if isinstance(raw, (str, int)) else "0"
+
+
 @router.get("", response_model=List[IncidentRead])
 async def list_incidents(
     status_filter: Optional[str] = Query(None, alias="status"),
     severity_filter: Optional[str] = Query(None, alias="severity"),
     limit: int = Query(50, le=200),
+    current_user: AuthenticatedUserContext = Depends(get_knowledge_read_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> List[Incident]:
-    """Liste les incidents avec filtres optionnels par statut ou sévérité."""
+    """Liste les incidents avec filtres optionnels et isolation multi-entités GLPI."""
+    scope = current_user.resolve_entity_scope(None)
     stmt = select(Incident).order_by(desc(Incident.opened_at)).limit(limit)
+    if "*" not in scope:
+        stmt = stmt.where(Incident.entity_id.in_(scope))
     if status_filter:
         stmt = stmt.where(Incident.status == status_filter.upper())
     if severity_filter:
@@ -65,13 +78,36 @@ async def list_incidents(
 @router.get("/{incident_id}")
 async def get_incident(
     incident_id: UUID,
+    current_user: AuthenticatedUserContext = Depends(get_knowledge_read_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> Dict[str, Any]:
-    """Retourne le détail d'un incident, ses événements, citations RAG, télémétrie IA et feedbacks."""
+    """Retourne le détail d'un incident avec vérification d'isolation multi-entités (anti-IDOR)."""
     stmt = select(Incident).where(Incident.id == incident_id)
     inc = (await session.execute(stmt)).scalar_one_or_none()
     if not inc:
         raise HTTPException(status_code=404, detail="Incident introuvable")
+
+    inc_entity = _safe_entity_id(inc)
+    if not current_user.can_access_entity(inc_entity):
+        session.add(
+            AuditLog(
+                id=uuid.uuid4(),
+                user_id=current_user.id,
+                action="INCIDENT_IDOR_BLOCKED",
+                resource_type="incident",
+                resource_id=str(incident_id),
+                details={
+                    "username": current_user.username,
+                    "target_entity": inc_entity,
+                    "allowed_entities": current_user.allowed_entities,
+                },
+            )
+        )
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé à l'entité GLPI de cet incident",
+        )
 
     ev_stmt = (
         select(IncidentEvent)
@@ -262,9 +298,16 @@ async def get_incident(
 async def trigger_incident_analysis(
     incident_id: UUID,
     request: Request,
+    current_user: AuthenticatedUserContext = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> Dict[str, Any]:
-    """Déclenche manuellement une nouvelle analyse LangGraph enrichie avec protection DoS (CWE-770)."""
+    """Déclenche manuellement une nouvelle analyse LangGraph enrichie (RBAC operator+, anti-IDOR, anti-DoS)."""
+    if not current_user.has_sufficient_role("operator"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Droits insuffisants : le rôle 'operator' ou 'admin' est requis pour relancer une analyse IA.",
+        )
+
     client_ip = request.client.host if request.client else "unknown"
     if not default_limiter.is_allowed(f"incident_analyze:{client_ip}"):
         raise HTTPException(
@@ -277,6 +320,24 @@ async def trigger_incident_analysis(
     inc = (await session.execute(stmt)).scalar_one_or_none()
     if not inc:
         raise HTTPException(status_code=404, detail="Incident introuvable")
+
+    inc_entity = _safe_entity_id(inc)
+    if not current_user.can_access_entity(inc_entity):
+        session.add(
+            AuditLog(
+                id=uuid.uuid4(),
+                user_id=current_user.id,
+                action="INCIDENT_IDOR_BLOCKED",
+                resource_type="incident",
+                resource_id=str(incident_id),
+                details={"username": current_user.username, "target_entity": inc_entity, "endpoint": "analyze"},
+            )
+        )
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé à l'entité GLPI de cet incident",
+        )
 
     primary_event_data = {
         "problem": inc.title,
@@ -315,6 +376,16 @@ async def trigger_incident_analysis(
 
     await persist_analysis_result(inc, result, dur_ms, session)
     approval = await create_pending_approval_if_paused(inc, hitl_res, session)
+    session.add(
+        AuditLog(
+            id=uuid.uuid4(),
+            user_id=current_user.id,
+            action="INCIDENT_MANUAL_ANALYSIS_TRIGGERED",
+            resource_type="incident",
+            resource_id=str(inc.id),
+            details={"triggered_by": current_user.username, "thread_id": thread_id, "duration_ms": dur_ms},
+        )
+    )
     await session.commit()
 
     return {
@@ -337,6 +408,24 @@ async def submit_incident_feedback(
     inc = (await session.execute(select(Incident).where(Incident.id == incident_id))).scalar_one_or_none()
     if not inc:
         raise HTTPException(status_code=404, detail="Incident introuvable")
+
+    inc_entity = _safe_entity_id(inc)
+    if not current_user.can_access_entity(inc_entity):
+        session.add(
+            AuditLog(
+                id=uuid.uuid4(),
+                user_id=current_user.id,
+                action="INCIDENT_IDOR_BLOCKED",
+                resource_type="incident",
+                resource_id=str(incident_id),
+                details={"username": current_user.username, "target_entity": inc_entity, "endpoint": "feedback"},
+            )
+        )
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé à l'entité GLPI de cet incident",
+        )
 
     feedback = IncidentFeedback(
         id=uuid.uuid4(),

@@ -58,15 +58,24 @@ async def validation_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
 
     hypotheses_list = []
     for h in state.get("hypotheses", []):
+        if isinstance(h, str):
+            hypotheses_list.append(
+                DiagnosticHypothesis(description=h, evidence=[], status=HypothesisStatus.UNCONFIRMED)
+            )
+            continue
+        if not isinstance(h, dict):
+            continue
         raw_status = str(h.get("status", "unconfirmed")).strip().lower()
         try:
             status_enum = HypothesisStatus(raw_status)
         except ValueError:
             status_enum = HypothesisStatus.UNCONFIRMED
+        raw_ev = h.get("evidence", [])
+        safe_ev = [str(e) for e in raw_ev] if isinstance(raw_ev, list) else ([str(raw_ev)] if raw_ev else [])
         hypotheses_list.append(
             DiagnosticHypothesis(
-                description=h.get("description", ""),
-                evidence=h.get("evidence", []),
+                description=str(h.get("description") or h.get("hypothesis") or ""),
+                evidence=safe_ev,
                 status=status_enum,
             )
         )
@@ -81,13 +90,29 @@ async def validation_agent_node(state: IncidentAgentState) -> Dict[str, Any]:
         except Exception:
             pass
 
+    raw_checks = state.get("missing_info_checks", [])
+    if isinstance(raw_checks, list):
+        safe_checks = [str(ch) for ch in raw_checks]
+    elif isinstance(raw_checks, str) and raw_checks.strip():
+        safe_checks = [raw_checks.strip()]
+    else:
+        safe_checks = []
+
+    raw_obs = state.get("observations")
+    if isinstance(raw_obs, list):
+        safe_observations = [str(o) for o in raw_obs] or ["Alerte détectée"]
+    elif isinstance(raw_obs, str) and raw_obs.strip():
+        safe_observations = [raw_obs.strip()]
+    else:
+        safe_observations = ["Alerte détectée"]
+
     report = DiagnosticReport(
         ticket_id=state.get("ticket_id"),
         host=state.get("host_name", "UNKNOWN"),
         incident=state.get("primary_event", {}).get("problem", "Incident"),
-        observations=state.get("observations", ["Alerte détectée"]),
+        observations=safe_observations,
         hypotheses=hypotheses_list,
-        checks=state.get("missing_info_checks", []),
+        checks=safe_checks,
         recommended_actions=[
             RecommendedAction(
                 action=a.get("action", ""),

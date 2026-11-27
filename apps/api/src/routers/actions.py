@@ -76,6 +76,30 @@ async def execute_runbook_action(
             detail=f"Droits insuffisants : le rôle '{current_user.role}' ne dispose pas des privilèges nécessaires pour exécuter ce runbook (requis : '{rb.required_role}')",
         )
 
+    # 3b. Contrôle d'isolation multi-entités (anti-IDOR)
+    raw_ent = getattr(incident_obj, "entity_id", "0")
+    inc_entity = str(raw_ent) if isinstance(raw_ent, (str, int)) else "0"
+    if not current_user.can_access_entity(inc_entity):
+        session.add(
+            AuditLog(
+                id=uuid4(),
+                user_id=current_user.id,
+                action="RUNBOOK_IDOR_BLOCKED",
+                resource_type="runbook",
+                resource_id=request.runbook_id,
+                details={
+                    "incident_id": str(request.incident_id),
+                    "target_entity": inc_entity,
+                    "username": current_user.username,
+                },
+            )
+        )
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé à l'entité GLPI de cet incident",
+        )
+
     rb_def = RunbookDefinition(
         id=rb.identifier,
         name=rb.name,
@@ -398,7 +422,10 @@ async def decide_approval(
             parameters=effective_params,
             approved_by_user_id=current_user.username,
         )
-        result: RunbookExecutionResult = await remediation_runner.execute(rb_def, exec_req)
+        try:
+            result: RunbookExecutionResult = await remediation_runner.execute(rb_def, exec_req)
+        except ValueError as val_err:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(val_err)) from val_err
 
         exec_row = ActionExecution(
             id=result.execution_id,

@@ -1,8 +1,9 @@
 """Routes de santé, liveness, readiness et métriques Prometheus temps réel."""
 
+import asyncio
 import os
 import time
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Dict, List, Tuple
 from fastapi import APIRouter, Depends, Response, status
 from prometheus_client import CONTENT_TYPE_LATEST
 from sqlalchemy import desc, func, select, text
@@ -29,56 +30,58 @@ router = APIRouter(tags=["Health"])
 
 _last_probe_ts: float = 0.0
 _PROBE_INTERVAL_SECONDS: float = 15.0
+_probe_lock = asyncio.Lock()
+
+
+async def _timed_probe(coro: Awaitable[bool], timeout: float = 2.5) -> Tuple[bool, int]:
+    """Exécute une sonde booléenne bornée par timeout et retourne (ok, latency_ms)."""
+    t0 = time.perf_counter()
+    try:
+        res = await asyncio.wait_for(coro, timeout=timeout)
+        return bool(res), int((time.perf_counter() - t0) * 1000)
+    except Exception:
+        return False, int((time.perf_counter() - t0) * 1000)
+
+
+async def _probe_zabbix() -> bool:
+    return bool(await zabbix_client.get_api_version())
+
+
+async def _probe_redis() -> bool:
+    return (await redis_streams.get_client()) is not None
+
+
+async def _probe_glpi() -> bool:
+    return bool(await glpi_client.init_session())
+
+
+async def _probe_pgvector() -> bool:
+    async with engine.connect() as conn:
+        res = await conn.execute(text("SELECT extname FROM pg_extension WHERE extname = 'vector'"))
+        return res.scalar() == "vector"
 
 
 async def probe_all_services_health() -> Dict[str, bool]:
-    """Sonde activement les composants clés et met à jour les jauges Prometheus aiops_service_up."""
+    """Sonde en parallèle les composants clés et met à jour les jauges Prometheus aiops_service_up."""
     global _last_probe_ts
-    _last_probe_ts = time.time()
-
-    # 1. Zabbix
-    zabbix_ok = False
-    try:
-        ver = await zabbix_client.get_api_version()
-        zabbix_ok = bool(ver)
-    except Exception:
-        zabbix_ok = False
-    set_service_health("zabbix", "supervision", zabbix_ok)
-
-    # 2. Redis Streams
-    redis_ok = False
-    try:
-        client = await redis_streams.get_client()
-        redis_ok = client is not None
-    except Exception:
-        redis_ok = False
-    set_service_health("redis", "messaging", redis_ok)
-
-    # 3. GLPI ITSM
-    glpi_ok = False
-    try:
-        token = await glpi_client.init_session()
-        glpi_ok = bool(token)
-    except Exception:
-        glpi_ok = False
-    set_service_health("glpi", "itsm", glpi_ok)
-
-    # 4. PostgreSQL / pgvector
-    db_ok = False
-    try:
-        async with engine.connect() as conn:
-            res = await conn.execute(text("SELECT extname FROM pg_extension WHERE extname = 'vector'"))
-            db_ok = res.scalar() == "vector"
-    except Exception:
-        db_ok = False
-    set_service_health("postgres_pgvector", "storage", db_ok)
-
-    return {
-        "zabbix": zabbix_ok,
-        "redis": redis_ok,
-        "glpi": glpi_ok,
-        "postgres_pgvector": db_ok,
-    }
+    async with _probe_lock:
+        _last_probe_ts = time.time()
+        (zbx_ok, _), (red_ok, _), (glpi_ok, _), (db_ok, _) = await asyncio.gather(
+            _timed_probe(_probe_zabbix()),
+            _timed_probe(_probe_redis()),
+            _timed_probe(_probe_glpi()),
+            _timed_probe(_probe_pgvector()),
+        )
+        set_service_health("zabbix", "supervision", zbx_ok)
+        set_service_health("redis", "messaging", red_ok)
+        set_service_health("glpi", "itsm", glpi_ok)
+        set_service_health("postgres_pgvector", "storage", db_ok)
+        return {
+            "zabbix": zbx_ok,
+            "redis": red_ok,
+            "glpi": glpi_ok,
+            "postgres_pgvector": db_ok,
+        }
 
 
 @router.get("/health/live", status_code=status.HTTP_200_OK)
@@ -132,132 +135,112 @@ async def readiness_probe(response: Response) -> dict:
 
 @router.get("/api/v1/system/flow-status")
 async def get_system_flow_status() -> Dict[str, Any]:
-    """Retourne l'état opérationnel et les métriques réelles de chaque composant de l'architecture AIOps."""
-    nodes = []
-
-    # 1. Zabbix Server & Web
-    t0 = time.time()
-    zabbix_ok = False
-    try:
-        ver = await zabbix_client.get_api_version()
-        zabbix_ok = bool(ver)
-    except Exception:
-        zabbix_ok = False
-    zabbix_lat = int((time.time() - t0) * 1000)
-    set_service_health("zabbix", "supervision", zabbix_ok)
-    nodes.append({
-        "id": "zabbix",
-        "name": "Zabbix Server 7.0",
-        "category": "Supervision IT",
-        "status": "completed" if zabbix_ok else "running",
-        "latency": f"{zabbix_lat}ms",
-        "description": "Supervision temps réel, trapper et émission de webhooks",
-    })
-
-    # 2. FastAPI Gateway
-    nodes.append({
-        "id": "gateway",
-        "name": "FastAPI Gateway",
-        "category": "Ingestion & Sécurité",
-        "status": "completed",
-        "latency": "2ms",
-        "description": "Normalisation des alertes, vérification HMAC et calcul d'idempotence SHA-256",
-    })
-
-    # 3. Redis Streams
-    t0 = time.time()
-    client = await redis_streams.get_client()
-    redis_lat = int((time.time() - t0) * 1000)
-    set_service_health("redis", "messaging", client is not None)
-    nodes.append({
-        "id": "redis",
-        "name": "Redis Streams",
-        "category": "Messagerie Asynchrone",
-        "status": "completed" if client else "idle",
-        "latency": f"{redis_lat}ms",
-        "description": "Stream 'zabbix:events' avec groupe de consommateurs orchestrator-group",
-    })
-
-    # 4. LangGraph Multi-Agents
-    async with async_session_maker() as session:
-        ai_runs_count = (await session.execute(select(func.count(AIAnalysisRun.id)))).scalar() or 0
-        avg_dur = (await session.execute(select(func.avg(AIAnalysisRun.duration_ms)))).scalar() or 420
-        pending_approvals = (
-            await session.execute(
-                select(func.count(ActionApproval.id)).where(
-                    ActionApproval.status.in_(["pending_approval", "PENDING"])
+    """Retourne l'état opérationnel en parallèle de chaque composant de l'architecture AIOps."""
+    async def _db_summary() -> Tuple[int, float, int, int]:
+        try:
+            async with async_session_maker() as session:
+                ai_runs_count = int((await session.execute(select(func.count(AIAnalysisRun.id)))).scalar() or 0)
+                avg_dur = float((await session.execute(select(func.avg(AIAnalysisRun.duration_ms)))).scalar() or 420)
+                pending_approvals = int(
+                    (
+                        await session.execute(
+                            select(func.count(ActionApproval.id)).where(
+                                ActionApproval.status.in_(["pending_approval", "PENDING"])
+                            )
+                        )
+                    ).scalar()
+                    or 0
                 )
-            )
-        ).scalar() or 0
-        executions_count = (await session.execute(select(func.count(ActionExecution.id)))).scalar() or 0
+                executions_count = int((await session.execute(select(func.count(ActionExecution.id)))).scalar() or 0)
+                return ai_runs_count, avg_dur, pending_approvals, executions_count
+        except Exception:
+            return 0, 420.0, 0, 0
 
-    nodes.append({
-        "id": "orchestrator",
-        "name": "LangGraph Multi-Agents",
-        "category": "Orchestration IA",
-        "status": "completed",
-        "latency": f"{int(avg_dur)}ms",
-        "description": f"Coordination des 7 agents ({ai_runs_count} diagnostics enregistrés)",
-    })
+    (
+        (zabbix_ok, zabbix_lat),
+        (redis_ok, redis_lat),
+        (glpi_ok, glpi_lat),
+        (rag_ok, rag_lat),
+        (ai_runs_count, avg_dur, pending_approvals, executions_count),
+    ) = await asyncio.gather(
+        _timed_probe(_probe_zabbix()),
+        _timed_probe(_probe_redis()),
+        _timed_probe(_probe_glpi()),
+        _timed_probe(_probe_pgvector()),
+        _db_summary(),
+    )
 
-    # 5. GLPI REST API
-    t0 = time.time()
-    glpi_ok = False
-    try:
-        token = await glpi_client.init_session()
-        glpi_ok = bool(token)
-    except Exception:
-        glpi_ok = False
-    glpi_lat = int((time.time() - t0) * 1000)
+    set_service_health("zabbix", "supervision", zabbix_ok)
+    set_service_health("redis", "messaging", redis_ok)
     set_service_health("glpi", "itsm", glpi_ok)
-    nodes.append({
-        "id": "glpi",
-        "name": "GLPI REST API",
-        "category": "ITSM & CMDB",
-        "status": "completed" if glpi_ok else "running",
-        "latency": f"{glpi_lat}ms",
-        "description": "Liaison CMDB, création de tickets ITIL et suivis privés",
-    })
-
-    # 6. pgvector RAG Engine
-    t0 = time.time()
-    rag_ok = False
-    try:
-        async with engine.connect() as conn:
-            res = await conn.execute(text("SELECT extname FROM pg_extension WHERE extname = 'vector'"))
-            rag_ok = res.scalar() == "vector"
-    except Exception:
-        rag_ok = False
-    rag_lat = int((time.time() - t0) * 1000)
     set_service_health("postgres_pgvector", "storage", rag_ok)
-    nodes.append({
-        "id": "rag",
-        "name": "pgvector RAG Engine",
-        "category": "Recherche Connaissances",
-        "status": "completed" if rag_ok else "running",
-        "latency": f"{rag_lat}ms",
-        "description": "Base PostgreSQL 16 + pgvector (Embeddings 768d + Reciprocal Rank Fusion)",
-    })
 
-    # 7. Technicien Opérateur
-    nodes.append({
-        "id": "technician",
-        "name": "Technicien Opérateur",
-        "category": "Validation Humaine",
-        "status": "waiting_approval" if pending_approvals > 0 else "completed",
-        "latency": f"{pending_approvals} en attente" if pending_approvals > 0 else "À jour",
-        "description": f"Validation humaine Niveau 3 ({pending_approvals} action(s) requise(s))",
-    })
-
-    # 8. Moteur de Runbooks
-    nodes.append({
-        "id": "remediation",
-        "name": "Moteur de Runbooks",
-        "category": "Remédiation Contrôlée",
-        "status": "completed" if executions_count > 0 else "idle",
-        "latency": f"{executions_count} exéc.",
-        "description": f"Exécution sandboxée et sécurisée ({executions_count} runbooks exécutés)",
-    })
+    nodes = [
+        {
+            "id": "zabbix",
+            "name": "Zabbix Server 7.0",
+            "category": "Supervision IT",
+            "status": "completed" if zabbix_ok else "running",
+            "latency": f"{zabbix_lat}ms",
+            "description": "Supervision temps réel, trapper et émission de webhooks",
+        },
+        {
+            "id": "gateway",
+            "name": "FastAPI Gateway",
+            "category": "Ingestion & Sécurité",
+            "status": "completed",
+            "latency": "2ms",
+            "description": "Normalisation des alertes, vérification HMAC et calcul d'idempotence SHA-256",
+        },
+        {
+            "id": "redis",
+            "name": "Redis Streams",
+            "category": "Messagerie Asynchrone",
+            "status": "completed" if redis_ok else "idle",
+            "latency": f"{redis_lat}ms",
+            "description": "Stream 'zabbix:events' avec groupe de consommateurs orchestrator-group",
+        },
+        {
+            "id": "orchestrator",
+            "name": "LangGraph Multi-Agents",
+            "category": "Orchestration IA",
+            "status": "completed",
+            "latency": f"{int(avg_dur)}ms",
+            "description": f"Coordination des 9 agents ({ai_runs_count} diagnostics enregistrés)",
+        },
+        {
+            "id": "glpi",
+            "name": "GLPI REST API",
+            "category": "ITSM & CMDB",
+            "status": "completed" if glpi_ok else "running",
+            "latency": f"{glpi_lat}ms",
+            "description": "Liaison CMDB, création de tickets ITIL et suivis privés",
+        },
+        {
+            "id": "rag",
+            "name": "pgvector RAG Engine",
+            "category": "Recherche Connaissances",
+            "status": "completed" if rag_ok else "running",
+            "latency": f"{rag_lat}ms",
+            "description": "Base PostgreSQL 16 + pgvector (Embeddings 768d + Reciprocal Rank Fusion)",
+        },
+        {
+            "id": "technician",
+            "name": "Technicien Opérateur",
+            "category": "Validation Humaine",
+            "status": "waiting_approval" if pending_approvals > 0 else "completed",
+            "latency": f"{pending_approvals} en attente" if pending_approvals > 0 else "À jour",
+            "description": f"Validation humaine Niveau 3 ({pending_approvals} action(s) requise(s))",
+        },
+        {
+            "id": "remediation",
+            "name": "Moteur de Runbooks",
+            "category": "Remédiation Contrôlée",
+            "status": "completed" if executions_count > 0 else "idle",
+            "latency": f"{executions_count} exéc.",
+            "description": f"Exécution sandboxée et sécurisée ({executions_count} runbooks exécutés)",
+        },
+    ]
 
     return {"nodes": nodes, "timestamp": time.time()}
 
@@ -557,21 +540,24 @@ async def get_multi_site_topology() -> Dict[str, Any]:
 
     try:
         async with async_session_maker() as session:
-            open_incidents = (
+            open_rows = (
                 await session.execute(
-                    select(Incident).where(Incident.status.in_(["OPEN", "INVESTIGATING", "CORRELATED", "WAITING_APPROVAL"]))
+                    select(Incident.primary_asset_name, Incident.incident_metadata).where(
+                        Incident.status.in_(["OPEN", "INVESTIGATING", "CORRELATED", "WAITING_APPROVAL"])
+                    )
                 )
-            ).scalars().all()
-            for inc in open_incidents:
+            ).all()
+            for asset_name, meta_raw in open_rows:
                 total_active += 1
-                meta = inc.incident_metadata or {}
-                s_code = meta.get("site_code")
+                meta = meta_raw or {}
+                s_code = meta.get("site_code") if isinstance(meta, dict) else None
                 if not s_code:
-                    if "LYN" in inc.primary_asset_name.upper():
+                    upper_name = (asset_name or "").upper()
+                    if "LYN" in upper_name:
                         s_code = "LYN-DC2"
-                    elif "MAR" in inc.primary_asset_name.upper():
+                    elif "MAR" in upper_name:
                         s_code = "MAR-EDGE-01"
-                    elif "CLD" in inc.primary_asset_name.upper():
+                    elif "CLD" in upper_name:
                         s_code = "CLD-EU-WEST"
                     else:
                         s_code = "PAR-DC1"

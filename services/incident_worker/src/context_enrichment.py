@@ -1,5 +1,6 @@
 """Enrichissement de contexte CMDB/Zabbix et persistance intégrale des diagnostics, citations RAG et propositions KB."""
 
+import asyncio
 from datetime import datetime, timezone
 import os
 from typing import Any, Dict, List, Optional
@@ -38,17 +39,15 @@ async def enrich_incident_context(
     asset_obj = (await session.execute(asset_stmt)).scalar_one_or_none()
 
     if asset_obj is None:
-        glpi_asset = None
-        zbx_host = None
-        try:
-            glpi_asset = await glpi_client.search_computer(incident.primary_asset_name)
-        except Exception:
-            glpi_asset = None
-        try:
-            if incident.zabbix_host_id and incident.zabbix_host_id not in ("0", "UNKNOWN"):
-                zbx_host = await zabbix_client.get_host(incident.zabbix_host_id)
-        except Exception:
-            zbx_host = None
+        glpi_coro = asyncio.wait_for(glpi_client.search_computer(incident.primary_asset_name), timeout=2.5)
+        if incident.zabbix_host_id and incident.zabbix_host_id not in ("0", "UNKNOWN"):
+            zbx_coro = asyncio.wait_for(zabbix_client.get_host(incident.zabbix_host_id), timeout=2.5)
+        else:
+            zbx_coro = asyncio.sleep(0, result=None)
+
+        glpi_res, zbx_res = await asyncio.gather(glpi_coro, zbx_coro, return_exceptions=True)
+        glpi_asset = None if isinstance(glpi_res, Exception) else glpi_res
+        zbx_host = None if isinstance(zbx_res, Exception) else zbx_res
 
         ip_addr = (incident.incident_metadata or {}).get("ip_address")
         if not ip_addr and zbx_host and isinstance(zbx_host.get("interfaces"), list) and zbx_host["interfaces"]:

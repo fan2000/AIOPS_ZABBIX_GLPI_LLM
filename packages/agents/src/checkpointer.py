@@ -25,6 +25,8 @@ class PostgresAsyncCheckpointSaver(BaseCheckpointSaver):
     def __init__(self) -> None:
         super().__init__()
         self._fallback_memory = InMemorySaver(serde=self.serde)
+        self._use_memory_fallback: bool = False
+        self._last_error: Optional[str] = None
 
     def _is_postgres(self, session: Any) -> bool:
         bind = getattr(session, "bind", None)
@@ -40,7 +42,10 @@ class PostgresAsyncCheckpointSaver(BaseCheckpointSaver):
         try:
             async with async_session_maker() as session:
                 if not self._is_postgres(session):
+                    self._use_memory_fallback = True
                     return await self._fallback_memory.aget_tuple(config)
+                self._use_memory_fallback = False
+                self._last_error = None
 
                 stmt = select(LangGraphCheckpoint).where(
                     LangGraphCheckpoint.thread_id == thread_id,
@@ -111,7 +116,9 @@ class PostgresAsyncCheckpointSaver(BaseCheckpointSaver):
                     parent_config=parent_config,
                     pending_writes=pending_writes,
                 )
-        except Exception:
+        except Exception as exc:
+            self._use_memory_fallback = True
+            self._last_error = str(exc)[:200]
             return await self._fallback_memory.aget_tuple(config)
 
     async def alist(
@@ -203,7 +210,10 @@ class PostgresAsyncCheckpointSaver(BaseCheckpointSaver):
         try:
             async with async_session_maker() as session:
                 if not self._is_postgres(session):
+                    self._use_memory_fallback = True
                     return await self._fallback_memory.aput(config, checkpoint, metadata, new_versions)
+                self._use_memory_fallback = False
+                self._last_error = None
 
                 stmt = (
                     pg_insert(LangGraphCheckpoint)
@@ -236,7 +246,9 @@ class PostgresAsyncCheckpointSaver(BaseCheckpointSaver):
                         "checkpoint_id": checkpoint_id,
                     }
                 }
-        except Exception:
+        except Exception as exc:
+            self._use_memory_fallback = True
+            self._last_error = str(exc)[:200]
             return await self._fallback_memory.aput(config, checkpoint, metadata, new_versions)
 
     async def aput_writes(

@@ -1,5 +1,6 @@
 """Sécurité, hachage et tokens JWT pour la plateforme AI IT Operations."""
 
+import asyncio
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -32,8 +33,18 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def get_password_hash(password: str) -> str:
-    """Génère le hash bcrypt du mot de passe."""
+    """Génère le hash pbkdf2_sha256/bcrypt du mot de passe."""
     return pwd_context.hash(password)
+
+
+async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
+    """Vérifie le mot de passe hors boucle événementielle asyncio via asyncio.to_thread."""
+    return await asyncio.to_thread(verify_password, plain_password, hashed_password)
+
+
+async def get_password_hash_async(password: str) -> str:
+    """Hache le mot de passe hors boucle événementielle asyncio via asyncio.to_thread."""
+    return await asyncio.to_thread(get_password_hash, password)
 
 
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:

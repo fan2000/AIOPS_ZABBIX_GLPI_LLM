@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { apiFetch } from "@/lib/api";
 import { 
   AlertCircle, 
   AlertOctagon, 
@@ -48,10 +49,10 @@ export default function IncidentsPage() {
     setLoading(true);
     setError(null);
     try {
-      let url = "http://localhost:8005/api/v1/incidents?limit=50";
+      let url = "/api/v1/incidents?limit=50";
       if (severityFilter) url += `&severity=${encodeURIComponent(severityFilter)}`;
       if (statusFilter) url += `&status=${encodeURIComponent(statusFilter)}`;
-      const res = await fetch(url, { cache: "no-store" });
+      const res = await apiFetch(url, { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         setIncidents(Array.isArray(data) ? data : []);

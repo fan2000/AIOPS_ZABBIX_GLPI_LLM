@@ -5,8 +5,13 @@ import re
 _INJECTION_PATTERNS = [
     re.compile(r"(?i)\bignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above)\s+instructions?\b"),
     re.compile(r"(?i)\bdisregard\s+(?:all\s+|the\s+)?(?:previous|above)\b"),
+    re.compile(r"(?i)\bforget\s+(?:all\s+|any\s+|the\s+|your\s+)?(?:previous|prior|above\s+)?instructions?\b"),
+    re.compile(r"(?i)\boverride\s+(?:the\s+|your\s+)?system(?:\s+prompt|\s+instructions?)?\b"),
+    re.compile(r"(?i)\bnew\s+instructions?\s*:"),
+    re.compile(r"(?i)\bjailbreak\b"),
     re.compile(r"(?i)\byou\s+are\s+now\s+(?:a|an|in)\b"),
-    re.compile(r"(?i)<\|\s*(?:im_start|im_end|system|assistant|user)\s*\|>"),
+    re.compile(r"(?i)<\|\s*(?:im_start|im_end|system|assistant|user|eot_id)\s*\|>"),
+    re.compile(r"(?i)\[/?INST\]"),
     re.compile(r"(?im)^\s*(?:system|assistant|developer)\s*:\s*"),
     re.compile(r"(?i)</?untrusted_[a-z0-9_]+>"),
 ]
@@ -15,6 +20,9 @@ _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
     re.MULTILINE,
 )
+_URL_CRED_RE = re.compile(r"(?i)\b(postgres(?:ql)?|redis|https?|amqp|mysql)://([^:\s/@]+):([^@\s/]+)@")
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b")
+_AWS_KEY_RE = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
 _BEARER_RE = re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9\-._~+/]+=*")
 _KV_SECRET_RE = re.compile(
     r"(?i)\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|session[_-]?token)\b(\s*[:=]\s*)([^\s,;\"']+)"
@@ -37,10 +45,13 @@ def sanitize_untrusted_text(text: str, max_len: int = 1200) -> str:
 
 
 def redact_sensitive_data(text: str) -> str:
-    """Masque secrets, clés privées, jetons et mots de passe avant toute inférence LLM."""
+    """Masque secrets, clés privées, JWT, clés AWS, credentials URL et mots de passe avant toute inférence LLM."""
     if not text:
         return ""
     out = _PRIVATE_KEY_RE.sub("[REDACTED_PRIVATE_KEY]", str(text))
+    out = _URL_CRED_RE.sub(r"\1://\2:[REDACTED]@", out)
+    out = _JWT_RE.sub("[REDACTED_JWT]", out)
+    out = _AWS_KEY_RE.sub("[REDACTED_AWS_KEY]", out)
     out = _BEARER_RE.sub(r"\1[REDACTED_TOKEN]", out)
     out = _KV_SECRET_RE.sub(r"\1\2[REDACTED]", out)
     out = _PREFIXED_KEY_RE.sub("[REDACTED_API_KEY]", out)

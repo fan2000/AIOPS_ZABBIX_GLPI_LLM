@@ -3,11 +3,24 @@
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from apps.api.src.dependencies.auth import AuthenticatedUserContext, get_current_user
 from packages.connectors.redis_streams import redis_streams
 from packages.connectors.zabbix.src.normalizer import normalize_zabbix_payload
+from packages.security.src.rate_limiter import default_limiter
 
 router = APIRouter(prefix="/api/v1/lab", tags=["Lab Simulator"])
+
+
+def _assert_lab_allowed() -> None:
+    """Désactive le simulateur Lab et les mocks GLPI en production sauf activation explicite."""
+    env = os.getenv("ENVIRONMENT", "development").lower()
+    lab_enabled = os.getenv("LAB_MODE_ENABLED", "false").lower() == "true"
+    if env == "production" and not lab_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Le simulateur Lab est désactivé en environnement de production.",
+        )
 
 # Scénarios préenregistrés
 SCENARIOS_CATALOG: Dict[str, Dict[str, Any]] = {
@@ -101,12 +114,31 @@ SCENARIOS_CATALOG: Dict[str, Dict[str, Any]] = {
 @router.get("/scenarios")
 async def list_available_scenarios() -> Dict[str, Any]:
     """Liste tous les scénarios de test prêts à être injectés."""
+    _assert_lab_allowed()
     return {"available_scenarios": list(SCENARIOS_CATALOG.keys())}
 
 
 @router.post("/scenarios/{scenario_id}/inject")
-async def inject_scenario(scenario_id: str) -> Dict[str, Any]:
-    """Injecte un scénario dans le flux temps réel de la plateforme."""
+async def inject_scenario(
+    scenario_id: str,
+    request: Request,
+    current_user: AuthenticatedUserContext = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Injecte un scénario dans le flux temps réel de la plateforme (RBAC operator+, anti-DoS)."""
+    _assert_lab_allowed()
+    if not current_user.has_sufficient_role("operator"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Droits insuffisants : le rôle 'operator' ou 'admin' est requis pour injecter un scénario.",
+        )
+
+    client_ip = request.client.host if request.client else "unknown"
+    if not default_limiter.is_allowed(f"lab_inject:{client_ip}"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Trop d'injections de scénarios simultanées. Veuillez patienter.",
+        )
+
     if scenario_id not in SCENARIOS_CATALOG:
         raise HTTPException(status_code=404, detail="Scénario inconnu")
 
@@ -121,6 +153,7 @@ async def inject_scenario(scenario_id: str) -> Dict[str, Any]:
         "message_id": msg_id,
         "event_id": normalized.event_id,
         "event_type": normalized.event_type.value,
+        "triggered_by": current_user.username,
     }
 
 
@@ -131,11 +164,13 @@ _TICKET_COUNTER = 15200
 
 @router.get("/glpi/initSession")
 async def mock_glpi_init_session() -> Dict[str, str]:
+    _assert_lab_allowed()
     return {"session_token": "mock_session_token_xyz123"}
 
 
 @router.get("/glpi/search/Computer")
 async def mock_glpi_search_computer() -> Dict[str, Any]:
+    _assert_lab_allowed()
     return {
         "totalcount": 1,
         "data": [
@@ -151,6 +186,7 @@ async def mock_glpi_search_computer() -> Dict[str, Any]:
 
 @router.post("/glpi/Ticket")
 async def mock_glpi_create_ticket(request: Request) -> Dict[str, int]:
+    _assert_lab_allowed()
     global _TICKET_COUNTER
     _TICKET_COUNTER += 1
     body = await request.json()
@@ -160,11 +196,13 @@ async def mock_glpi_create_ticket(request: Request) -> Dict[str, int]:
 
 @router.post("/glpi/Ticket/{ticket_id}/ITILFollowup")
 async def mock_glpi_followup(ticket_id: int, request: Request) -> Dict[str, int]:
+    _assert_lab_allowed()
     return {"id": 8801, "message": "Suivi privé enregistré dans GLPI"}
 
 
 @router.get("/glpi/KnowbaseItem")
 async def mock_glpi_knowbase() -> List[Dict[str, Any]]:
+    _assert_lab_allowed()
     return [
         {
             "id": 12,
